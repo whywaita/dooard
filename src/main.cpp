@@ -4,8 +4,13 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
+#include <cstring>
 
+#if __has_include("secrets.local.h")
 #include "secrets.local.h"
+#else
+#include "secrets.example.h"
+#endif
 
 #ifndef CORE2_APP_NAME
 #define CORE2_APP_NAME "dooard"
@@ -42,7 +47,6 @@ unsigned long lastWifiAttempt = 0;
 
 String weatherCodeText(int code);
 String formatNowLabel();
-String formatDateTimeLabel(const char* timeString);
 String formatTempRange(float minTemp, float maxTemp);
 String hourLabelFromIso(const char* iso);
 void drawLoading(const String& line1, const String& line2 = "");
@@ -313,13 +317,6 @@ String hourLabelFromIso(const char* timeString) {
   return String(buf);
 }
 
-String formatDateTimeLabel(const char* timeString) {
-  if (timeString == nullptr) {
-    return "--:--";
-  }
-  return String(timeString).substring(11, 16);
-}
-
 String formatTempRange(float minTemp, float maxTemp) {
   if (isnan(minTemp) || isnan(maxTemp)) {
     return "Temp range unavailable";
@@ -354,11 +351,13 @@ void drawState(const WeatherState& s, bool wifiOk) {
   }
 
   M5.Display.setTextSize(1);
-  M5.Display.drawString("Now: " + s.summary, 10, 110);
-  M5.Display.drawString("Today: " + s.details, 10, 132);
-  M5.Display.drawString("Rain: " + (s.maxRemainingRainChance >= 0 ? String(s.maxRemainingRainChance) + "%" : String("--")), 10, 154);
+  M5.Display.drawString(String("Now: ") + s.summary, 10, 110);
+  M5.Display.drawString(String("Today: ") + s.details, 10, 132);
+  M5.Display.drawString(
+      String("Rain: ") + (s.maxRemainingRainChance >= 0 ? String(s.maxRemainingRainChance) + "%" : String("--")), 10,
+      154);
   M5.Display.drawString(s.nextRainAt, 10, 176);
-  M5.Display.drawString("Updated: " + s.updatedAt, 10, 208);
+  M5.Display.drawString(String("Updated: ") + s.updatedAt, 10, 208);
 
   M5.Display.drawString("Btn A/B/C: refresh", 200, 208);
 }
