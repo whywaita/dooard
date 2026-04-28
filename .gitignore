@@ -4,3 +4,6 @@
 secrets.local.h
 secrets.h
 .DS_Store
+
+__pycache__/
+*.pyc
