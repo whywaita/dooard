@@ -12,10 +12,18 @@ M5Stack Core2 weather display for "what's left today".
 
 ## Setup
 
-1. Copy `include/secrets.example.h` to `include/secrets.local.h`
-2. Fill in Wi-Fi credentials
-3. Adjust latitude / longitude / label for your location
-4. Build with PlatformIO for `m5stack-core2`
+1. Install `uv`
+2. Run `make sync`
+3. Copy `include/secrets.example.h` to `include/secrets.local.h`
+4. Fill in Wi-Fi credentials
+5. Adjust latitude / longitude / label for your location
+6. Build with PlatformIO for `m5stack-core2`
+
+## Tooling
+
+- `make sync` creates the local Python environment and installs PlatformIO
+- `make build` runs `pio run` inside that environment
+- `make monitor` opens the serial monitor
 
 ## Notes
 
