@@ -5,12 +5,15 @@
 #include <WiFiClientSecure.h>
 #include <time.h>
 #include <cstring>
+#include <vector>
 
 #if __has_include("secrets.local.h")
 #include "secrets.local.h"
 #else
 #include "secrets.example.h"
 #endif
+
+#include "weather_logic.h"
 
 #ifndef CORE2_APP_NAME
 #define CORE2_APP_NAME "dooard"
@@ -23,7 +26,6 @@ constexpr const char* kNtp2 = "pool.ntp.org";
 constexpr unsigned long kWifiConnectTimeoutMs = 20000;
 constexpr unsigned long kWeatherRefreshIntervalMs = 15UL * 60UL * 1000UL;
 constexpr unsigned long kClockSyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
-constexpr int kRainThreshold = 50;
 
 struct WeatherState {
   bool ok = false;
@@ -35,8 +37,6 @@ struct WeatherState {
   int currentWeatherCode = -1;
   int currentPrecipitationProbability = -1;
   int maxRemainingRainChance = -1;
-  float minRemainingTemperature = NAN;
-  float maxRemainingTemperature = NAN;
   String nextRainAt;
 };
 
@@ -45,16 +45,14 @@ unsigned long lastWeatherFetch = 0;
 unsigned long lastClockSync = 0;
 unsigned long lastWifiAttempt = 0;
 
-String weatherCodeText(int code);
 String formatNowLabel();
-String formatTempRange(float minTemp, float maxTemp);
-String hourLabelFromIso(const char* iso);
 void drawLoading(const String& line1, const String& line2 = "");
 void drawState(const WeatherState& s, bool wifiOk);
 bool ensureWifi();
 bool ensureClock();
 bool fetchWeather(WeatherState& out);
 String buildWeatherUrl();
+std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourly);
 }  // namespace
 
 void setup() {
@@ -160,8 +158,6 @@ bool fetchWeather(WeatherState& out) {
   out.details = "";
   out.nextRainAt = "";
   out.maxRemainingRainChance = -1;
-  out.minRemainingTemperature = NAN;
-  out.maxRemainingTemperature = NAN;
 
   if (WiFi.status() != WL_CONNECTED) {
     out.summary = "Wi-Fi disconnected";
@@ -202,14 +198,9 @@ bool fetchWeather(WeatherState& out) {
   out.currentWeatherCode = current["weather_code"] | -1;
   out.currentPrecipitationProbability = current["precipitation_probability"] | -1;
 
-  const JsonArray times = hourly["time"].as<JsonArray>();
-  const JsonArray temps = hourly["temperature_2m"].as<JsonArray>();
-  const JsonArray probs = hourly["precipitation_probability"].as<JsonArray>();
-  const JsonArray codes = hourly["weather_code"].as<JsonArray>();
-
   struct tm nowTm {};
   if (!getLocalTime(&nowTm, 1000)) {
-    out.summary = weatherCodeText(out.currentWeatherCode);
+    out.summary = String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
     out.updatedAt = "--:--";
     out.ok = true;
     return true;
@@ -217,80 +208,22 @@ bool fetchWeather(WeatherState& out) {
 
   char currentHourLabel[16];
   strftime(currentHourLabel, sizeof(currentHourLabel), "%Y-%m-%dT%H", &nowTm);
-  bool foundRemaining = false;
+  const std::vector<dooard::HourlyForecast> hourlyForecasts = parseHourlyForecasts(hourly);
+  const dooard::RemainingForecastSummary summary =
+      dooard::summarizeRemainingHours(hourlyForecasts, currentHourLabel, 50);
 
-  float minTemp = NAN;
-  float maxTemp = NAN;
-  int maxRainChance = -1;
-  String nextRainAt;
-
-  const size_t count = times.size();
-  for (size_t i = 0; i < count; ++i) {
-    const char* timeString = times[i] | "";
-    if (strncmp(timeString, currentHourLabel, 13) < 0) {
-      continue;
-    }
-    const float temp = temps[i] | NAN;
-    const int rainChance = probs[i] | -1;
-    const int code = codes[i] | -1;
-
-    if (!isnan(temp)) {
-      if (isnan(minTemp) || temp < minTemp) minTemp = temp;
-      if (isnan(maxTemp) || temp > maxTemp) maxTemp = temp;
-    }
-    if (rainChance > maxRainChance) {
-      maxRainChance = rainChance;
-    }
-
-    const bool isRainy = rainChance >= kRainThreshold || code == 51 || code == 53 || code == 55 ||
-                         code == 61 || code == 63 || code == 65 || code == 80 || code == 81 ||
-                         code == 82;
-    if (nextRainAt.isEmpty() && isRainy) {
-      nextRainAt = hourLabelFromIso(timeString);
-    }
-    foundRemaining = true;
-  }
-
-  out.maxRemainingRainChance = maxRainChance;
-  out.minRemainingTemperature = minTemp;
-  out.maxRemainingTemperature = maxTemp;
-  out.nextRainAt = nextRainAt.isEmpty() ? String("No rain expected") : (String("Rain from ") + nextRainAt);
-  out.summary = weatherCodeText(out.currentWeatherCode);
-  out.details = formatTempRange(out.minRemainingTemperature, out.maxRemainingTemperature);
+  out.maxRemainingRainChance = summary.max_rain_chance;
+  out.nextRainAt = summary.next_rain_at.empty() ? String("No rain expected")
+                                                : (String("Rain from ") + summary.next_rain_at.c_str());
+  out.summary = String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
+  out.details = String(dooard::formatTempRange(summary.min_temperature, summary.max_temperature).c_str());
   out.updatedAt = formatNowLabel();
   out.ok = true;
 
-  if (!foundRemaining) {
+  if (!summary.has_data) {
     out.details = "No remaining hourly data";
   }
   return true;
-}
-
-String weatherCodeText(int code) {
-  switch (code) {
-    case 0: return "Clear";
-    case 1:
-    case 2:
-    case 3: return "Cloudy";
-    case 45:
-    case 48: return "Fog";
-    case 51:
-    case 53:
-    case 55: return "Drizzle";
-    case 61:
-    case 63:
-    case 65:
-    case 80:
-    case 81:
-    case 82: return "Rain";
-    case 71:
-    case 73:
-    case 75:
-    case 77:
-    case 85:
-    case 86: return "Snow";
-    default: return code >= 0 ? String("Code ") + code : String("Unknown");
-  }
 }
 
 String formatNowLabel() {
@@ -301,27 +234,6 @@ String formatNowLabel() {
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &nowTm);
   return String(buf);
-}
-
-String hourLabelFromIso(const char* timeString) {
-  if (timeString == nullptr || strlen(timeString) < 13) {
-    return "--:--";
-  }
-  char buf[6];
-  buf[0] = timeString[11];
-  buf[1] = timeString[12];
-  buf[2] = ':';
-  buf[3] = '0';
-  buf[4] = '0';
-  buf[5] = '\0';
-  return String(buf);
-}
-
-String formatTempRange(float minTemp, float maxTemp) {
-  if (isnan(minTemp) || isnan(maxTemp)) {
-    return "Temp range unavailable";
-  }
-  return String("Range ") + String(minTemp, 1) + ".." + String(maxTemp, 1) + " C";
 }
 
 void drawLoading(const String& line1, const String& line2) {
@@ -360,5 +272,25 @@ void drawState(const WeatherState& s, bool wifiOk) {
   M5.Display.drawString(String("Updated: ") + s.updatedAt, 10, 208);
 
   M5.Display.drawString("Btn A/B/C: refresh", 200, 208);
+}
+
+std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourly) {
+  std::vector<dooard::HourlyForecast> forecasts;
+  const JsonArray times = hourly["time"].as<JsonArray>();
+  const JsonArray temps = hourly["temperature_2m"].as<JsonArray>();
+  const JsonArray probs = hourly["precipitation_probability"].as<JsonArray>();
+  const JsonArray codes = hourly["weather_code"].as<JsonArray>();
+
+  const size_t count = times.size();
+  forecasts.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    dooard::HourlyForecast forecast;
+    forecast.time = (const char*)(times[i] | "");
+    forecast.temperature = temps[i] | NAN;
+    forecast.precipitation_probability = probs[i] | -1;
+    forecast.weather_code = codes[i] | -1;
+    forecasts.push_back(forecast);
+  }
+  return forecasts;
 }
 }  // namespace

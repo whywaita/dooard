@@ -5,5 +5,4 @@ description = "Local tooling for the dooard Core2 weather display"
 requires-python = ">=3.14,<3.15"
 dependencies = [
   "platformio>=6.1,<7",
-  "pytest>=8,<9",
 ]

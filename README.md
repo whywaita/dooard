@@ -22,6 +22,8 @@ M5Stack Core2 weather display for "what's left today".
 ## Tooling
 
 - `make sync` creates the local Python environment and installs PlatformIO
+- `make test` runs native C++ tests with PlatformIO
+- `make lint` runs `pio check`
 - `make build` runs `pio run` inside that environment
 - `make monitor` opens the serial monitor
 

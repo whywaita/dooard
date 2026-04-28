@@ -6,7 +6,7 @@ sync:
 	$(UV) sync
 
 test:
-	$(UV) run pytest
+	$(UV) run pio test -e native
 
 lint:
 	$(UV) run pio check
