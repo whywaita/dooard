@@ -48,6 +48,67 @@ void test_summarize_remaining_hours_handles_no_rain_expected() {
   TEST_ASSERT_EQUAL_INT(30, summary.max_rain_chance);
 }
 
+void test_build_three_hour_buckets_aggregates_max_and_worst() {
+  const std::vector<HourlyForecast> hours = {
+      {"2026-04-28T13:00", 18.0f, 10, 0},
+      {"2026-04-28T14:00", 19.0f, 20, 1},
+      {"2026-04-28T15:00", 20.0f, 50, 2},
+      {"2026-04-28T16:00", 21.0f, 80, 61},
+      {"2026-04-28T17:00", 22.0f, 30, 0},
+      {"2026-04-28T18:00", 21.0f, 20, 1},
+      {"2026-04-28T19:00", 19.0f, 10, 1},
+  };
+
+  const auto buckets = dooard::buildThreeHourBuckets(hours, "2026-04-28T14", 2);
+
+  TEST_ASSERT_EQUAL_size_t(2, buckets.size());
+  TEST_ASSERT_EQUAL_STRING("14", buckets[0].start_label.c_str());
+  TEST_ASSERT_EQUAL_INT(14, buckets[0].start_hour);
+  TEST_ASSERT_EQUAL_FLOAT(19.0f, buckets[0].start_temperature);
+  TEST_ASSERT_EQUAL_INT(80, buckets[0].max_precipitation_probability);
+  TEST_ASSERT_EQUAL_INT(61, buckets[0].worst_weather_code);
+
+  TEST_ASSERT_EQUAL_STRING("17", buckets[1].start_label.c_str());
+  TEST_ASSERT_EQUAL_INT(30, buckets[1].max_precipitation_probability);
+  TEST_ASSERT_EQUAL_INT(1, buckets[1].worst_weather_code);
+}
+
+void test_build_three_hour_buckets_returns_partial_when_not_enough_hours() {
+  const std::vector<HourlyForecast> hours = {
+      {"2026-04-28T14:00", 19.0f, 20, 1},
+      {"2026-04-28T15:00", 20.0f, 50, 2},
+  };
+
+  const auto buckets = dooard::buildThreeHourBuckets(hours, "2026-04-28T14", 6);
+
+  TEST_ASSERT_EQUAL_size_t(1, buckets.size());
+  TEST_ASSERT_EQUAL_STRING("14", buckets[0].start_label.c_str());
+  TEST_ASSERT_EQUAL_INT(50, buckets[0].max_precipitation_probability);
+  TEST_ASSERT_EQUAL_INT(2, buckets[0].worst_weather_code);
+}
+
+void test_build_three_hour_buckets_skips_past_hours() {
+  const std::vector<HourlyForecast> hours = {
+      {"2026-04-28T10:00", 12.0f, 90, 65},
+      {"2026-04-28T11:00", 13.0f, 80, 61},
+      {"2026-04-28T14:00", 20.0f, 10, 0},
+      {"2026-04-28T15:00", 21.0f, 0, 0},
+      {"2026-04-28T16:00", 22.0f, 0, 0},
+  };
+
+  const auto buckets = dooard::buildThreeHourBuckets(hours, "2026-04-28T14", 1);
+
+  TEST_ASSERT_EQUAL_size_t(1, buckets.size());
+  TEST_ASSERT_EQUAL_INT(10, buckets[0].max_precipitation_probability);
+  TEST_ASSERT_EQUAL_INT(0, buckets[0].worst_weather_code);
+}
+
+void test_weather_code_severity_orders_rain_above_clear() {
+  TEST_ASSERT_TRUE(dooard::weatherCodeSeverity(61) > dooard::weatherCodeSeverity(0));
+  TEST_ASSERT_TRUE(dooard::weatherCodeSeverity(95) > dooard::weatherCodeSeverity(82));
+  TEST_ASSERT_TRUE(dooard::weatherCodeSeverity(3) > dooard::weatherCodeSeverity(1));
+}
+
 void setUp(void) {}
 
 void tearDown(void) {}
@@ -60,5 +121,9 @@ int main(int argc, char** argv) {
   RUN_TEST(test_hour_label_from_iso_extracts_hour);
   RUN_TEST(test_summarize_remaining_hours_uses_remaining_hours_only);
   RUN_TEST(test_summarize_remaining_hours_handles_no_rain_expected);
+  RUN_TEST(test_build_three_hour_buckets_aggregates_max_and_worst);
+  RUN_TEST(test_build_three_hour_buckets_returns_partial_when_not_enough_hours);
+  RUN_TEST(test_build_three_hour_buckets_skips_past_hours);
+  RUN_TEST(test_weather_code_severity_orders_rain_above_clear);
   return UNITY_END();
 }

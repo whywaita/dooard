@@ -31,14 +31,13 @@ struct WeatherState {
   bool ok = false;
   String title;
   String summary;
-  String details;
   String updatedAt;
   float currentTemperature = NAN;
   int currentWeatherCode = -1;
-  int currentPrecipitationProbability = -1;
-  int maxRemainingRainChance = -1;
-  String nextRainAt;
+  std::vector<dooard::ThreeHourBucket> buckets;
 };
+
+constexpr size_t kBucketCount = 6;
 
 WeatherState state;
 unsigned long lastWeatherFetch = 0;
@@ -145,7 +144,7 @@ String buildWeatherUrl() {
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(WEATHER_LATITUDE, 6) +
                "&longitude=" + String(WEATHER_LONGITUDE, 6) +
                "&timezone=Asia%2FTokyo" +
-               "&forecast_days=1" +
+               "&forecast_days=2" +
                "&current=temperature_2m,weather_code,precipitation_probability" +
                "&hourly=temperature_2m,weather_code,precipitation_probability";
   return url;
@@ -155,9 +154,7 @@ bool fetchWeather(WeatherState& out) {
   out.ok = false;
   out.title = WEATHER_LABEL;
   out.summary = "No data";
-  out.details = "";
-  out.nextRainAt = "";
-  out.maxRemainingRainChance = -1;
+  out.buckets.clear();
 
   if (WiFi.status() != WL_CONNECTED) {
     out.summary = "Wi-Fi disconnected";
@@ -171,6 +168,7 @@ bool fetchWeather(WeatherState& out) {
     out.summary = "HTTP begin failed";
     return false;
   }
+  http.useHTTP10(true);
 
   const int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
@@ -196,7 +194,6 @@ bool fetchWeather(WeatherState& out) {
 
   out.currentTemperature = current["temperature_2m"] | NAN;
   out.currentWeatherCode = current["weather_code"] | -1;
-  out.currentPrecipitationProbability = current["precipitation_probability"] | -1;
 
   struct tm nowTm {};
   if (!getLocalTime(&nowTm, 1000)) {
@@ -209,20 +206,11 @@ bool fetchWeather(WeatherState& out) {
   char currentHourLabel[16];
   strftime(currentHourLabel, sizeof(currentHourLabel), "%Y-%m-%dT%H", &nowTm);
   const std::vector<dooard::HourlyForecast> hourlyForecasts = parseHourlyForecasts(hourly);
-  const dooard::RemainingForecastSummary summary =
-      dooard::summarizeRemainingHours(hourlyForecasts, currentHourLabel, 50);
+  out.buckets = dooard::buildThreeHourBuckets(hourlyForecasts, currentHourLabel, kBucketCount);
 
-  out.maxRemainingRainChance = summary.max_rain_chance;
-  out.nextRainAt = summary.next_rain_at.empty() ? String("No rain expected")
-                                                : (String("Rain from ") + summary.next_rain_at.c_str());
   out.summary = String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
-  out.details = String(dooard::formatTempRange(summary.min_temperature, summary.max_temperature).c_str());
   out.updatedAt = formatNowLabel();
   out.ok = true;
-
-  if (!summary.has_data) {
-    out.details = "No remaining hourly data";
-  }
   return true;
 }
 
@@ -245,33 +233,175 @@ void drawLoading(const String& line1, const String& line2) {
   }
 }
 
+void drawCloudShape(int cx, int cy, uint16_t color) {
+  M5.Display.fillCircle(cx - 9, cy + 2, 7, color);
+  M5.Display.fillCircle(cx + 9, cy + 2, 7, color);
+  M5.Display.fillCircle(cx, cy - 4, 9, color);
+  M5.Display.fillRect(cx - 14, cy + 2, 28, 6, color);
+}
+
+void drawSunIcon(int cx, int cy) {
+  const uint16_t color = TFT_YELLOW;
+  M5.Display.fillCircle(cx, cy, 7, color);
+  for (int a = 0; a < 8; ++a) {
+    const float rad = a * (PI / 4.0f);
+    const int x1 = cx + (int)(cosf(rad) * 11);
+    const int y1 = cy + (int)(sinf(rad) * 11);
+    const int x2 = cx + (int)(cosf(rad) * 16);
+    const int y2 = cy + (int)(sinf(rad) * 16);
+    M5.Display.drawLine(x1, y1, x2, y2, color);
+  }
+}
+
+void drawPartlyCloudyIcon(int cx, int cy) {
+  M5.Display.fillCircle(cx - 6, cy - 6, 5, TFT_YELLOW);
+  for (int a = 0; a < 8; ++a) {
+    const float rad = a * (PI / 4.0f);
+    const int x1 = cx - 6 + (int)(cosf(rad) * 8);
+    const int y1 = cy - 6 + (int)(sinf(rad) * 8);
+    const int x2 = cx - 6 + (int)(cosf(rad) * 11);
+    const int y2 = cy - 6 + (int)(sinf(rad) * 11);
+    M5.Display.drawLine(x1, y1, x2, y2, TFT_YELLOW);
+  }
+  drawCloudShape(cx + 2, cy + 4, TFT_LIGHTGREY);
+}
+
+void drawCloudIcon(int cx, int cy, uint16_t tint) {
+  drawCloudShape(cx, cy, tint);
+}
+
+void drawRainIcon(int cx, int cy, uint16_t cloudTint) {
+  drawCloudShape(cx, cy - 4, cloudTint);
+  for (int i = -1; i <= 1; ++i) {
+    const int x = cx + i * 7;
+    M5.Display.drawLine(x + 1, cy + 9, x - 2, cy + 16, TFT_CYAN);
+    M5.Display.drawLine(x + 2, cy + 9, x - 1, cy + 16, TFT_CYAN);
+  }
+}
+
+void drawSnowIcon(int cx, int cy) {
+  drawCloudShape(cx, cy - 4, TFT_LIGHTGREY);
+  for (int i = -1; i <= 1; ++i) {
+    const int x = cx + i * 7;
+    const int y = cy + 13;
+    M5.Display.drawLine(x - 2, y, x + 2, y, TFT_WHITE);
+    M5.Display.drawLine(x, y - 2, x, y + 2, TFT_WHITE);
+    M5.Display.drawLine(x - 1, y - 1, x + 1, y + 1, TFT_WHITE);
+    M5.Display.drawLine(x - 1, y + 1, x + 1, y - 1, TFT_WHITE);
+  }
+}
+
+void drawThunderIcon(int cx, int cy) {
+  drawCloudShape(cx, cy - 4, TFT_DARKGREY);
+  M5.Display.fillTriangle(cx - 1, cy + 8, cx + 5, cy + 8, cx - 3, cy + 14, TFT_YELLOW);
+  M5.Display.fillTriangle(cx + 1, cy + 12, cx + 6, cy + 12, cx, cy + 20, TFT_YELLOW);
+}
+
+void drawFogIcon(int cx, int cy) {
+  for (int i = -1; i <= 1; ++i) {
+    M5.Display.drawLine(cx - 13, cy + i * 6, cx + 13, cy + i * 6, TFT_LIGHTGREY);
+  }
+}
+
+void drawWeatherIcon(int cx, int cy, int code) {
+  if (code == 0) {
+    drawSunIcon(cx, cy);
+  } else if (code == 1 || code == 2) {
+    drawPartlyCloudyIcon(cx, cy);
+  } else if (code == 3) {
+    drawCloudIcon(cx, cy, TFT_LIGHTGREY);
+  } else if (code == 45 || code == 48) {
+    drawFogIcon(cx, cy);
+  } else if (code >= 51 && code <= 55) {
+    drawRainIcon(cx, cy, TFT_LIGHTGREY);
+  } else if ((code >= 61 && code <= 65) || (code >= 80 && code <= 82)) {
+    drawRainIcon(cx, cy, TFT_DARKGREY);
+  } else if ((code >= 71 && code <= 77) || code == 85 || code == 86) {
+    drawSnowIcon(cx, cy);
+  } else if (code >= 95) {
+    drawThunderIcon(cx, cy);
+  } else {
+    drawCloudIcon(cx, cy, TFT_LIGHTGREY);
+  }
+}
+
+uint16_t rainColor(int probability) {
+  if (probability >= 70) return TFT_RED;
+  if (probability >= 40) return TFT_YELLOW;
+  return TFT_WHITE;
+}
+
 void drawState(const WeatherState& s, bool wifiOk) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.setTextDatum(top_left);
+
   M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(top_left);
+  M5.Display.drawString(String(CORE2_APP_NAME), 6, 6);
+  M5.Display.drawString(s.title, 70, 6);
 
-  M5.Display.drawString(String(CORE2_APP_NAME), 10, 8);
-  M5.Display.drawString(wifiOk ? "Wi-Fi OK" : "Wi-Fi NG", 220, 8);
-  M5.Display.drawString(s.title, 10, 30);
-
-  M5.Display.setTextSize(2);
+  M5.Display.setTextDatum(top_right);
+  M5.Display.setTextColor(wifiOk ? TFT_GREEN : TFT_RED, TFT_BLACK);
+  M5.Display.drawString(wifiOk ? "Wi-Fi OK" : "Wi-Fi NG", 314, 6);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   if (s.ok && !isnan(s.currentTemperature)) {
-    M5.Display.drawString(String(s.currentTemperature, 1) + " C", 10, 60);
+    M5.Display.drawString(String("Now ") + String(s.currentTemperature, 1) + "C", 314, 18);
   } else {
-    M5.Display.drawString(s.summary, 10, 60);
+    M5.Display.drawString(s.summary, 314, 18);
   }
 
-  M5.Display.setTextSize(1);
-  M5.Display.drawString(String("Now: ") + s.summary, 10, 110);
-  M5.Display.drawString(String("Today: ") + s.details, 10, 132);
-  M5.Display.drawString(
-      String("Rain: ") + (s.maxRemainingRainChance >= 0 ? String(s.maxRemainingRainChance) + "%" : String("--")), 10,
-      154);
-  M5.Display.drawString(s.nextRainAt, 10, 176);
-  M5.Display.drawString(String("Updated: ") + s.updatedAt, 10, 208);
+  M5.Display.drawFastHLine(0, 30, 320, TFT_DARKGREY);
 
-  M5.Display.drawString("Btn A/B/C: refresh", 200, 208);
+  if (s.buckets.empty()) {
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.setTextSize(2);
+    M5.Display.drawString(s.summary.isEmpty() ? "No forecast" : s.summary, 160, 120);
+  } else {
+    constexpr int kCellTop = 36;
+    constexpr int kCellBottom = 200;
+    constexpr int kCellWidth = 320 / 6;
+    for (size_t i = 0; i < s.buckets.size() && i < kBucketCount; ++i) {
+      const auto& b = s.buckets[i];
+      const int cx = (int)i * kCellWidth + kCellWidth / 2;
+
+      if (i > 0) {
+        M5.Display.drawFastVLine((int)i * kCellWidth, kCellTop, kCellBottom - kCellTop, TFT_DARKGREY);
+      }
+
+      M5.Display.setTextDatum(top_center);
+      M5.Display.setTextSize(1);
+      M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+      char hourBuf[8];
+      std::snprintf(hourBuf, sizeof(hourBuf), "%02d:00", b.start_hour);
+      M5.Display.drawString(hourBuf, cx, kCellTop + 4);
+
+      drawWeatherIcon(cx, kCellTop + 38, b.worst_weather_code);
+
+      M5.Display.setTextSize(2);
+      M5.Display.setTextColor(rainColor(b.max_precipitation_probability), TFT_BLACK);
+      const String pctText =
+          b.max_precipitation_probability >= 0 ? String(b.max_precipitation_probability) + "%" : String("--");
+      M5.Display.drawString(pctText, cx, kCellTop + 84);
+
+      M5.Display.setTextSize(1);
+      M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+      char tempBuf[12];
+      if (!isnan(b.start_temperature)) {
+        std::snprintf(tempBuf, sizeof(tempBuf), "%.0fC", b.start_temperature);
+      } else {
+        std::snprintf(tempBuf, sizeof(tempBuf), "--C");
+      }
+      M5.Display.drawString(tempBuf, cx, kCellTop + 116);
+    }
+  }
+
+  M5.Display.drawFastHLine(0, 210, 320, TFT_DARKGREY);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  M5.Display.setTextDatum(top_left);
+  M5.Display.drawString(String("Updated ") + s.updatedAt, 6, 218);
+  M5.Display.setTextDatum(top_right);
+  M5.Display.drawString("Btn A/B/C: refresh", 314, 218);
 }
 
 std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourly) {
