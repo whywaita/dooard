@@ -20,7 +20,7 @@
 #endif
 
 namespace {
-constexpr const char* kTimeZone = "Asia/Tokyo";
+constexpr const char* kTimeZone = "JST-9";
 constexpr const char* kNtp1 = "ntp.nict.jp";
 constexpr const char* kNtp2 = "pool.ntp.org";
 constexpr unsigned long kWifiConnectTimeoutMs = 20000;
@@ -369,21 +369,22 @@ void drawState(const WeatherState& s, bool wifiOk) {
       }
 
       M5.Display.setTextDatum(top_center);
+      M5.Display.setTextFont(2);
       M5.Display.setTextSize(1);
-      M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+      M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
       char hourBuf[8];
       std::snprintf(hourBuf, sizeof(hourBuf), "%02d:00", b.start_hour);
       M5.Display.drawString(hourBuf, cx, kCellTop + 4);
+      M5.Display.setTextFont(0);
 
-      drawWeatherIcon(cx, kCellTop + 38, b.worst_weather_code);
+      drawWeatherIcon(cx, kCellTop + 56, b.worst_weather_code);
 
       M5.Display.setTextSize(2);
       M5.Display.setTextColor(rainColor(b.max_precipitation_probability), TFT_BLACK);
       const String pctText =
           b.max_precipitation_probability >= 0 ? String(b.max_precipitation_probability) + "%" : String("--");
-      M5.Display.drawString(pctText, cx, kCellTop + 84);
+      M5.Display.drawString(pctText, cx, kCellTop + 92);
 
-      M5.Display.setTextSize(1);
       M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
       char tempBuf[12];
       if (!isnan(b.start_temperature)) {
@@ -391,7 +392,7 @@ void drawState(const WeatherState& s, bool wifiOk) {
       } else {
         std::snprintf(tempBuf, sizeof(tempBuf), "--C");
       }
-      M5.Display.drawString(tempBuf, cx, kCellTop + 116);
+      M5.Display.drawString(tempBuf, cx, kCellTop + 120);
     }
   }
 
