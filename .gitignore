@@ -1,5 +1,11 @@
 .pio/
+.venv/
+.worktrees/
 .vscode/
 secrets.local.h
 secrets.h
 .DS_Store
+__pycache__/
+
+__pycache__/
+*.pyc
