@@ -1,5 +1,6 @@
 .pio/
 .venv/
+.worktrees/
 .vscode/
 secrets.local.h
 secrets.h
