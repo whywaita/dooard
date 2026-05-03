@@ -1,22 +1,28 @@
-UV ?= ~/.local/bin/uv
+UV ?= uv
+PIO ?= .venv/bin/pio
 UPLOAD_PORT ?=
 
-.PHONY: sync test lint build burn monitor
+.PHONY: sync test test-docs test-native lint build burn monitor
 
 sync:
 	$(UV) sync
 
-test:
-	$(UV) run pio test -e native
+test: test-docs test-native
+
+test-docs:
+	sh test/test_power_docs.sh
+
+test-native:
+	$(PIO) test -e native
 
 lint:
-	$(UV) run pio check
+	$(PIO) check
 
 build:
-	$(UV) run pio run
+	$(PIO) run
 
 burn:
-	$(UV) run pio run -t upload $(if $(UPLOAD_PORT),--upload-port $(UPLOAD_PORT),)
+	$(PIO) run -t upload $(if $(UPLOAD_PORT),--upload-port $(UPLOAD_PORT),)
 
 monitor:
-	$(UV) run pio device monitor
+	$(PIO) device monitor

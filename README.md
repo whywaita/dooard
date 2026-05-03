@@ -22,7 +22,7 @@ M5Stack Core2 weather display for "what's left today".
 ## Tooling
 
 - `make sync` creates the local Python environment and installs PlatformIO
-- `make test` runs native C++ tests with PlatformIO
+- `make test` runs docs checks and native C++ tests with PlatformIO
 - `make lint` runs `pio check`
 - `make build` runs `pio run` inside that environment
 - `make monitor` opens the serial monitor
@@ -31,3 +31,5 @@ M5Stack Core2 weather display for "what's left today".
 
 - Wi-Fi credentials are kept out of git via `secrets.local.h`
 - Weather data uses Open-Meteo
+- Power behavior and measurement guidance for battery deployments lives in
+  [Power notes for M5Stack Core2](docs/power.md)
