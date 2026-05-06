@@ -189,6 +189,13 @@ void test_button_refresh_labels_match_requirement() {
   TEST_ASSERT_EQUAL_STRING("Button pressed", dooard::kButtonWakeReason);
 }
 
+void test_ota_poll_interval_is_six_hours();
+void test_ota_version_compare_orders_semantic_versions();
+void test_ota_version_compare_accepts_v_prefix_and_missing_patch();
+void test_ota_version_compare_rejects_invalid_versions();
+void test_parse_ota_manifest_requires_expected_fields();
+void test_parse_ota_manifest_rejects_invalid_sha256();
+
 void setUp(void) {}
 
 void tearDown(void) {}
@@ -213,5 +220,11 @@ int main(int argc, char **argv) {
   RUN_TEST(test_sleep_wake_interval_caps_polling_before_weather_refresh);
   RUN_TEST(test_core2_button_wakeup_gpio_mask);
   RUN_TEST(test_button_refresh_labels_match_requirement);
+  RUN_TEST(test_ota_poll_interval_is_six_hours);
+  RUN_TEST(test_ota_version_compare_orders_semantic_versions);
+  RUN_TEST(test_ota_version_compare_accepts_v_prefix_and_missing_patch);
+  RUN_TEST(test_ota_version_compare_rejects_invalid_versions);
+  RUN_TEST(test_parse_ota_manifest_requires_expected_fields);
+  RUN_TEST(test_parse_ota_manifest_rejects_invalid_sha256);
   return UNITY_END();
 }
