@@ -6,6 +6,7 @@
 #include <cstring>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <string>
 #include <time.h>
 #include <vector>
 
@@ -15,6 +16,9 @@
 #include "secrets.example.h"
 #endif
 
+#include "ota_check.h"
+#include "ota_config.h"
+#include "ota_update.h"
 #include "power_policy.h"
 #include "weather_logic.h"
 
@@ -45,8 +49,14 @@ WeatherState state;
 unsigned long lastWeatherFetch = 0;
 unsigned long lastClockSync = 0;
 unsigned long lastInteractionAt = 0;
+unsigned long lastOtaCheck = 0;
+unsigned long otaButtonHoldStartedAt = 0;
 dooard::PowerStage powerStage = dooard::PowerStage::kActive;
 esp_sleep_wakeup_cause_t pendingWakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
+dooard::ota::OtaManifest pendingOtaManifest;
+bool pendingOtaAvailable = false;
+bool otaButtonActionTaken = false;
+String otaStatusLine;
 
 String formatNowLabel();
 void drawLoading(const String &line1, const String &line2 = "");
@@ -56,6 +66,8 @@ bool ensureClock();
 bool fetchWeather(WeatherState &out);
 String buildWeatherUrl();
 bool refreshWeather(bool buttonWake);
+bool checkForOtaUpdate(bool showProgress);
+void executeOtaUpdate();
 void noteUserActivity();
 void applyPowerStage(dooard::PowerStage nextStage);
 void updatePowerStageForInactivity(unsigned long now);
@@ -63,8 +75,11 @@ esp_sleep_wakeup_cause_t consumeWakeupCause();
 bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause);
 bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause);
 bool buttonsPressed();
+bool otaButtonChordPressed();
+bool handleOtaButtonChord();
 bool buttonsHeldLow();
 bool weatherRefreshDue(unsigned long now);
+bool otaPollDue(unsigned long now);
 uint32_t elapsedSinceWeatherRefresh(unsigned long now);
 uint64_t nextSleepTimerUs(unsigned long now);
 void setActiveCpuFrequency();
@@ -96,6 +111,7 @@ void setup() {
   lastInteractionAt = millis();
 
   refreshWeather(false);
+  checkForOtaUpdate(false);
   shutdownWifi();
   setIdleCpuFrequency();
 }
@@ -103,6 +119,11 @@ void setup() {
 void loop() {
   M5.update();
   const esp_sleep_wakeup_cause_t wakeupCause = consumeWakeupCause();
+  if (handleOtaButtonChord()) {
+    delay(50);
+    return;
+  }
+
   const bool buttonRefresh = isButtonWakeup(wakeupCause) || buttonsPressed();
 
   if (buttonRefresh) {
@@ -127,6 +148,14 @@ void loop() {
     if (powerStage != dooard::PowerStage::kActive) {
       applyPowerStage(dooard::PowerStage::kDim);
     }
+    shutdownWifi();
+  }
+
+  if (otaPollDue(millis())) {
+    if (timerWake) {
+      applyPowerStage(dooard::PowerStage::kDim);
+    }
+    checkForOtaUpdate(false);
     shutdownWifi();
   }
 
@@ -274,6 +303,110 @@ bool refreshWeather(bool buttonWake) {
   return updated;
 }
 
+bool checkForOtaUpdate(bool showProgress) {
+  setActiveCpuFrequency();
+  if (showProgress) {
+    drawLoading("OTA check", "Connecting...");
+  }
+
+  if (!ensureWifi()) {
+    lastOtaCheck = millis();
+    otaStatusLine = "OTA Wi-Fi NG";
+    if (showProgress) {
+      drawLoading("OTA failed", "Wi-Fi disconnected");
+      delay(2000);
+    }
+    drawState(state, WiFi.status() == WL_CONNECTED);
+    setIdleCpuFrequency();
+    return false;
+  }
+
+  if (showProgress) {
+    drawLoading("OTA check", "Fetching version");
+  }
+
+  dooard::ota::OtaManifest manifest;
+  std::string error;
+  const bool fetched = dooard::ota::fetchOtaManifest(manifest, error);
+  lastOtaCheck = millis();
+  if (!fetched) {
+    pendingOtaAvailable = false;
+    otaStatusLine = "OTA check failed";
+    if (showProgress) {
+      drawLoading("OTA failed", String(error.c_str()));
+      delay(2500);
+    }
+    drawState(state, WiFi.status() == WL_CONNECTED);
+    setIdleCpuFrequency();
+    return false;
+  }
+
+  if (dooard::ota::isNewerVersion(dooard::ota::currentFirmwareVersion(),
+                                  manifest.version.c_str())) {
+    pendingOtaManifest = manifest;
+    pendingOtaAvailable = true;
+    otaStatusLine = String("OTA ") + manifest.version.c_str() +
+                    " hold A+B+C";
+  } else {
+    pendingOtaAvailable = false;
+    otaStatusLine = "";
+  }
+
+  if (showProgress && !pendingOtaAvailable) {
+    drawLoading("OTA check", "No update");
+    delay(1500);
+  }
+  drawState(state, WiFi.status() == WL_CONNECTED);
+  setIdleCpuFrequency();
+  return pendingOtaAvailable;
+}
+
+void executeOtaUpdate() {
+  noteUserActivity();
+  drawLoading("OTA update", "Preparing...");
+
+  if (!pendingOtaAvailable && !checkForOtaUpdate(true)) {
+    shutdownWifi();
+    return;
+  }
+
+  if (!dooard::ota::isNewerVersion(dooard::ota::currentFirmwareVersion(),
+                                   pendingOtaManifest.version.c_str())) {
+    pendingOtaAvailable = false;
+    otaStatusLine = "";
+    drawLoading("OTA update", "No update");
+    delay(1500);
+    drawState(state, WiFi.status() == WL_CONNECTED);
+    shutdownWifi();
+    return;
+  }
+
+  if (!ensureWifi()) {
+    otaStatusLine = "OTA Wi-Fi NG";
+    drawLoading("OTA failed", "Wi-Fi disconnected");
+    delay(2500);
+    drawState(state, WiFi.status() == WL_CONNECTED);
+    shutdownWifi();
+    return;
+  }
+
+  drawLoading("OTA update",
+              String("Downloading ") + pendingOtaManifest.version.c_str());
+  std::string error;
+  if (!dooard::ota::performOtaUpdate(pendingOtaManifest, error)) {
+    otaStatusLine = "OTA failed";
+    drawLoading("OTA failed", String(error.c_str()));
+    delay(3000);
+    drawState(state, WiFi.status() == WL_CONNECTED);
+    shutdownWifi();
+    return;
+  }
+
+  drawLoading("OTA complete", "Restarting...");
+  delay(1500);
+  ESP.restart();
+}
+
 void noteUserActivity() {
   lastInteractionAt = millis();
   applyPowerStage(dooard::PowerStage::kActive);
@@ -312,6 +445,33 @@ bool buttonsPressed() {
   return M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
 }
 
+bool otaButtonChordPressed() {
+  return digitalRead(dooard::kButtonAGpio) == LOW &&
+         digitalRead(dooard::kButtonBGpio) == LOW &&
+         digitalRead(dooard::kButtonCGpio) == LOW;
+}
+
+bool handleOtaButtonChord() {
+  if (!otaButtonChordPressed()) {
+    otaButtonHoldStartedAt = 0;
+    otaButtonActionTaken = false;
+    return false;
+  }
+
+  if (otaButtonHoldStartedAt == 0) {
+    otaButtonHoldStartedAt = millis();
+    noteUserActivity();
+  }
+
+  if (!otaButtonActionTaken &&
+      static_cast<uint32_t>(millis() - otaButtonHoldStartedAt) >=
+          dooard::ota::kOtaManualHoldMs) {
+    otaButtonActionTaken = true;
+    executeOtaUpdate();
+  }
+  return true;
+}
+
 bool buttonsHeldLow() {
   return digitalRead(dooard::kButtonAGpio) == LOW ||
          digitalRead(dooard::kButtonBGpio) == LOW ||
@@ -322,6 +482,12 @@ bool weatherRefreshDue(unsigned long now) {
   return lastWeatherFetch == 0 ||
          static_cast<uint32_t>(now - lastWeatherFetch) >=
              dooard::kWeatherRefreshIntervalMs;
+}
+
+bool otaPollDue(unsigned long now) {
+  return lastOtaCheck == 0 ||
+         static_cast<uint32_t>(now - lastOtaCheck) >=
+             dooard::ota::kOtaPollIntervalMs;
 }
 
 uint32_t elapsedSinceWeatherRefresh(unsigned long now) {
@@ -576,7 +742,9 @@ void drawState(const WeatherState &s, bool wifiOk) {
   M5.Display.setTextDatum(top_left);
   M5.Display.drawString(String("Updated ") + s.updatedAt, 6, 218);
   M5.Display.setTextDatum(top_right);
-  M5.Display.drawString("Btn A/B/C: refresh", 314, 218);
+  M5.Display.drawString(
+      otaStatusLine.isEmpty() ? "Btn A/B/C: refresh" : otaStatusLine, 314,
+      218);
 }
 
 std::vector<dooard::HourlyForecast>
