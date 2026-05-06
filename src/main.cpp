@@ -16,6 +16,7 @@
 #include "secrets.example.h"
 #endif
 
+#include "credential_store.h"
 #include "ota_check.h"
 #include "ota_config.h"
 #include "ota_update.h"
@@ -26,12 +27,26 @@
 #define CORE2_APP_NAME "dooard"
 #endif
 
+#ifndef DOOARD_API_KEY
+#define DOOARD_API_KEY ""
+#endif
+
+#ifndef DOOARD_DEVICE_ID
+#define DOOARD_DEVICE_ID "dooard-core2"
+#endif
+
+#ifndef DOOARD_ENDPOINT_URL
+#define DOOARD_ENDPOINT_URL "http://api.open-meteo.com/v1/forecast"
+#endif
+
 namespace {
 constexpr const char *kTimeZone = "JST-9";
 constexpr const char *kNtp1 = "ntp.nict.jp";
 constexpr const char *kNtp2 = "pool.ntp.org";
 constexpr unsigned long kWifiConnectTimeoutMs = 20000;
 constexpr unsigned long kClockSyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
+constexpr const char *kWifiSsidPlaceholder = "YOUR_WIFI_SSID";
+constexpr const char *kWifiPasswordPlaceholder = "YOUR_WIFI_PASSWORD";
 
 struct WeatherState {
   bool ok = false;
@@ -43,9 +58,20 @@ struct WeatherState {
   std::vector<dooard::ThreeHourBucket> buckets;
 };
 
+struct AppCredentialSettings {
+  bool valid = false;
+  bool fromNvs = false;
+  std::string wifiSsid;
+  std::string wifiPassword;
+  std::string apiKey;
+  std::string deviceId;
+  std::string endpointUrl;
+};
+
 constexpr size_t kBucketCount = 6;
 
 WeatherState state;
+AppCredentialSettings credentialSettings;
 unsigned long lastWeatherFetch = 0;
 unsigned long lastClockSync = 0;
 unsigned long lastInteractionAt = 0;
@@ -61,6 +87,15 @@ String otaStatusLine;
 String formatNowLabel();
 void drawLoading(const String &line1, const String &line2 = "");
 void drawState(const WeatherState &s, bool wifiOk);
+bool loadCredentialSettings();
+bool loadStoredCredentialSettings(
+    AppCredentialSettings &out, dooard::credentials::CredentialStatus &status);
+bool loadFallbackCredentialSettings(AppCredentialSettings &out);
+bool runSerialCredentialSetup();
+void applyCredentialRecord(const dooard::credentials::CredentialRecord &record,
+                           bool fromNvs, AppCredentialSettings &out);
+std::string readSerialCredentialLine(const char *prompt, bool required);
+bool missingOrPlaceholder(const char *value, const char *placeholder);
 bool ensureWifi();
 bool ensureClock();
 bool fetchWeather(WeatherState &out);
@@ -94,6 +129,8 @@ parseHourlyForecasts(const JsonObject &hourly);
 void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
+  Serial.begin(115200);
+  Serial.setTimeout(300000);
   setActiveCpuFrequency();
   applyPowerStage(dooard::PowerStage::kActive);
   pinMode(dooard::kButtonAGpio, INPUT);
@@ -103,6 +140,14 @@ void setup() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(1);
+
+  drawLoading(CORE2_APP_NAME, "Loading credentials...");
+  if (!loadCredentialSettings()) {
+    while (true) {
+      M5.update();
+      delay(100);
+    }
+  }
 
   drawLoading(CORE2_APP_NAME, "Connecting Wi-Fi...");
 
@@ -177,14 +222,168 @@ void setActiveCpuFrequency() {
 
 void setIdleCpuFrequency() { setCpuFrequencyMhz(dooard::kIdleCpuFrequencyMhz); }
 
+void applyCredentialRecord(const dooard::credentials::CredentialRecord &record,
+                           bool fromNvs, AppCredentialSettings &out) {
+  out.valid = true;
+  out.fromNvs = fromNvs;
+  out.wifiSsid = record.wifi_ssid;
+  out.wifiPassword = record.wifi_password;
+  out.apiKey = record.api_key;
+  out.deviceId = record.device_id;
+  out.endpointUrl = record.endpoint_url;
+}
+
+bool loadStoredCredentialSettings(
+    AppCredentialSettings &out, dooard::credentials::CredentialStatus &status) {
+  dooard::credentials::CredentialStore store;
+  if (!store.begin(dooard::credentials::CredentialAccessMode::kReadOnly)) {
+    status = store.lastStatus();
+    return false;
+  }
+
+  dooard::credentials::CredentialRecord record;
+  const bool loaded = store.load(record);
+  status = store.lastStatus();
+  store.end();
+  if (!loaded) {
+    return false;
+  }
+
+  applyCredentialRecord(record, true, out);
+  return true;
+}
+
+bool missingOrPlaceholder(const char *value, const char *placeholder) {
+  return value == nullptr || value[0] == '\0' ||
+         std::strcmp(value, placeholder) == 0;
+}
+
+bool loadFallbackCredentialSettings(AppCredentialSettings &out) {
+  if (missingOrPlaceholder(WIFI_SSID, kWifiSsidPlaceholder) ||
+      missingOrPlaceholder(WIFI_PASSWORD, kWifiPasswordPlaceholder)) {
+    return false;
+  }
+
+  dooard::credentials::CredentialRecord record;
+  record.wifi_ssid = WIFI_SSID;
+  record.wifi_password = WIFI_PASSWORD;
+  record.api_key = DOOARD_API_KEY;
+  record.device_id = DOOARD_DEVICE_ID;
+  record.endpoint_url = DOOARD_ENDPOINT_URL;
+  dooard::credentials::finalizeCredentialRecord(record);
+  if (dooard::credentials::validateCredentialRecord(record) !=
+      dooard::credentials::CredentialStatus::kOk) {
+    return false;
+  }
+
+  applyCredentialRecord(record, false, out);
+  return true;
+}
+
+bool loadCredentialSettings() {
+  dooard::credentials::CredentialStatus storedStatus =
+      dooard::credentials::CredentialStatus::kStorageUnavailable;
+  if (loadStoredCredentialSettings(credentialSettings, storedStatus)) {
+    Serial.println("Loaded credentials from NVS namespace dooard-creds.");
+    return true;
+  }
+
+  Serial.print("Stored credentials status: ");
+  Serial.println(dooard::credentials::credentialStatusText(storedStatus));
+
+  if (storedStatus != dooard::credentials::CredentialStatus::kNotConfigured &&
+      storedStatus !=
+          dooard::credentials::CredentialStatus::kStorageUnavailable) {
+    drawLoading(
+        "Credentials invalid",
+        String(dooard::credentials::credentialStatusText(storedStatus)));
+    delay(1500);
+    return runSerialCredentialSetup();
+  }
+
+  if (loadFallbackCredentialSettings(credentialSettings)) {
+    Serial.println("Using build-time credential fallback.");
+    return true;
+  }
+
+  drawLoading("First setup", "Open serial monitor");
+  return runSerialCredentialSetup();
+}
+
+std::string readSerialCredentialLine(const char *prompt, bool required) {
+  while (true) {
+    Serial.print(prompt);
+    Serial.print(required ? " (required): " : " (optional): ");
+    while (!Serial.available()) {
+      M5.update();
+      delay(50);
+    }
+
+    String value = Serial.readStringUntil('\n');
+    value.trim();
+    if (!value.isEmpty() || !required) {
+      return std::string(value.c_str());
+    }
+    Serial.println("Value is required.");
+  }
+}
+
+bool runSerialCredentialSetup() {
+  while (Serial.available()) {
+    Serial.read();
+  }
+
+  Serial.println();
+  Serial.println("dooard credential setup");
+  Serial.println("Values are stored in NVS namespace dooard-creds.");
+  Serial.println(
+      "API key may be empty when the configured endpoint does not need one.");
+
+  dooard::credentials::CredentialRecord record;
+  record.wifi_ssid = readSerialCredentialLine("WiFi SSID", true);
+  record.wifi_password = readSerialCredentialLine("WiFi password", true);
+  record.api_key = readSerialCredentialLine("API key", false);
+  record.device_id = readSerialCredentialLine("Device ID", true);
+  record.endpoint_url = readSerialCredentialLine("Endpoint URL", true);
+
+  dooard::credentials::CredentialStore store;
+  if (!store.begin(dooard::credentials::CredentialAccessMode::kReadWrite)) {
+    Serial.println("NVS credential store is unavailable.");
+    drawLoading("Setup failed", "NVS unavailable");
+    return false;
+  }
+
+  const bool saved = store.save(record);
+  const dooard::credentials::CredentialStatus status = store.lastStatus();
+  store.end();
+  if (!saved) {
+    Serial.print("Credential save failed: ");
+    Serial.println(dooard::credentials::credentialStatusText(status));
+    drawLoading("Setup failed",
+                String(dooard::credentials::credentialStatusText(status)));
+    return false;
+  }
+
+  Serial.println("Credentials saved. Restarting...");
+  drawLoading("Setup complete", "Restarting...");
+  delay(1500);
+  ESP.restart();
+  return true;
+}
+
 bool ensureWifi() {
+  if (!credentialSettings.valid) {
+    return false;
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     return true;
   }
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(credentialSettings.wifiSsid.c_str(),
+             credentialSettings.wifiPassword.c_str());
   const unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED &&
          millis() - start < kWifiConnectTimeoutMs) {
@@ -209,9 +408,11 @@ bool ensureClock() {
 }
 
 String buildWeatherUrl() {
+  const char *baseUrl = credentialSettings.endpointUrl.empty()
+                            ? dooard::kWeatherApiBaseUrl
+                            : credentialSettings.endpointUrl.c_str();
   String url =
-      String(dooard::kWeatherApiBaseUrl) +
-      "?latitude=" + String(WEATHER_LATITUDE, 6) +
+      String(baseUrl) + "?latitude=" + String(WEATHER_LATITUDE, 6) +
       "&longitude=" + String(WEATHER_LONGITUDE, 6) + "&timezone=Asia%2FTokyo" +
       "&forecast_days=2" +
       "&current=temperature_2m,weather_code,precipitation_probability" +
@@ -237,6 +438,13 @@ bool fetchWeather(WeatherState &out) {
     return false;
   }
   http.useHTTP10(true);
+  if (!credentialSettings.apiKey.empty()) {
+    http.addHeader("Authorization",
+                   String("Bearer ") + credentialSettings.apiKey.c_str());
+  }
+  if (!credentialSettings.deviceId.empty()) {
+    http.addHeader("X-Dooard-Device-Id", credentialSettings.deviceId.c_str());
+  }
 
   const int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
@@ -345,8 +553,7 @@ bool checkForOtaUpdate(bool showProgress) {
                                   manifest.version.c_str())) {
     pendingOtaManifest = manifest;
     pendingOtaAvailable = true;
-    otaStatusLine = String("OTA ") + manifest.version.c_str() +
-                    " hold A+B+C";
+    otaStatusLine = String("OTA ") + manifest.version.c_str() + " hold A+B+C";
   } else {
     pendingOtaAvailable = false;
     otaStatusLine = "";
@@ -485,9 +692,8 @@ bool weatherRefreshDue(unsigned long now) {
 }
 
 bool otaPollDue(unsigned long now) {
-  return lastOtaCheck == 0 ||
-         static_cast<uint32_t>(now - lastOtaCheck) >=
-             dooard::ota::kOtaPollIntervalMs;
+  return lastOtaCheck == 0 || static_cast<uint32_t>(now - lastOtaCheck) >=
+                                  dooard::ota::kOtaPollIntervalMs;
 }
 
 uint32_t elapsedSinceWeatherRefresh(unsigned long now) {
@@ -743,8 +949,7 @@ void drawState(const WeatherState &s, bool wifiOk) {
   M5.Display.drawString(String("Updated ") + s.updatedAt, 6, 218);
   M5.Display.setTextDatum(top_right);
   M5.Display.drawString(
-      otaStatusLine.isEmpty() ? "Btn A/B/C: refresh" : otaStatusLine, 314,
-      218);
+      otaStatusLine.isEmpty() ? "Btn A/B/C: refresh" : otaStatusLine, 314, 218);
 }
 
 std::vector<dooard::HourlyForecast>
