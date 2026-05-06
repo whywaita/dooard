@@ -2,9 +2,11 @@
 #include <HTTPClient.h>
 #include <M5Unified.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <time.h>
+#include <WiFiClient.h>
 #include <cstring>
+#include <driver/gpio.h>
+#include <esp_sleep.h>
+#include <time.h>
 #include <vector>
 
 #if __has_include("secrets.local.h")
@@ -13,6 +15,7 @@
 #include "secrets.example.h"
 #endif
 
+#include "power_policy.h"
 #include "weather_logic.h"
 
 #ifndef CORE2_APP_NAME
@@ -20,11 +23,10 @@
 #endif
 
 namespace {
-constexpr const char* kTimeZone = "JST-9";
-constexpr const char* kNtp1 = "ntp.nict.jp";
-constexpr const char* kNtp2 = "pool.ntp.org";
+constexpr const char *kTimeZone = "JST-9";
+constexpr const char *kNtp1 = "ntp.nict.jp";
+constexpr const char *kNtp2 = "pool.ntp.org";
 constexpr unsigned long kWifiConnectTimeoutMs = 20000;
-constexpr unsigned long kWeatherRefreshIntervalMs = 15UL * 60UL * 1000UL;
 constexpr unsigned long kClockSyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
 
 struct WeatherState {
@@ -42,88 +44,86 @@ constexpr size_t kBucketCount = 6;
 WeatherState state;
 unsigned long lastWeatherFetch = 0;
 unsigned long lastClockSync = 0;
-unsigned long lastWifiAttempt = 0;
 
 String formatNowLabel();
-void drawLoading(const String& line1, const String& line2 = "");
-void drawState(const WeatherState& s, bool wifiOk);
+void drawLoading(const String &line1, const String &line2 = "");
+void drawState(const WeatherState &s, bool wifiOk);
 bool ensureWifi();
 bool ensureClock();
-bool fetchWeather(WeatherState& out);
+bool fetchWeather(WeatherState &out);
 String buildWeatherUrl();
-std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourly);
-}  // namespace
+bool refreshWeather(bool buttonWake);
+bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause);
+bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause);
+bool buttonsHeldLow();
+void setActiveCpuFrequency();
+void setIdleCpuFrequency();
+void shutdownWifi();
+void configureWakeupSources();
+void enterLightSleep();
+std::vector<dooard::HourlyForecast>
+parseHourlyForecasts(const JsonObject &hourly);
+} // namespace
 
 void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
+  setActiveCpuFrequency();
+  M5.Display.setBrightness(dooard::kDisplayBrightness);
+  pinMode(dooard::kButtonAGpio, INPUT);
+  pinMode(dooard::kButtonBGpio, INPUT);
+  pinMode(dooard::kButtonCGpio, INPUT);
   M5.Display.setRotation(1);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   M5.Display.setTextSize(1);
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
   drawLoading(CORE2_APP_NAME, "Connecting Wi-Fi...");
-  ensureWifi();
-  ensureClock();
 
   state.title = WEATHER_LABEL;
   state.summary = "Loading";
-  drawState(state, WiFi.status() == WL_CONNECTED);
 
-  if (fetchWeather(state)) {
-    lastWeatherFetch = millis();
-  }
-  drawState(state, WiFi.status() == WL_CONNECTED);
+  refreshWeather(false);
+  shutdownWifi();
+  setIdleCpuFrequency();
 }
 
 void loop() {
+  setActiveCpuFrequency();
+  const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
   M5.update();
 
-  const bool buttonRefresh = M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
+  const bool buttonRefresh = isButtonWakeup(wakeupCause) ||
+                             M5.BtnA.wasPressed() || M5.BtnB.wasPressed() ||
+                             M5.BtnC.wasPressed();
   if (buttonRefresh) {
-    drawLoading("Refreshing", "Button pressed");
-    ensureWifi();
-    ensureClock();
-    if (fetchWeather(state)) {
-      lastWeatherFetch = millis();
-    }
-    drawState(state, WiFi.status() == WL_CONNECTED);
+    refreshWeather(true);
+  } else if (isTimerWakeup(wakeupCause) || lastWeatherFetch == 0 ||
+             millis() - lastWeatherFetch > dooard::kWeatherRefreshIntervalMs) {
+    refreshWeather(false);
   }
 
-  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiAttempt > 10000UL) {
-    ensureWifi();
-  }
-
-  if (millis() - lastClockSync > kClockSyncIntervalMs) {
-    ensureClock();
-  }
-
-  if (millis() - lastWeatherFetch > kWeatherRefreshIntervalMs || lastWeatherFetch == 0) {
-    if (WiFi.status() == WL_CONNECTED) {
-      if (fetchWeather(state)) {
-        lastWeatherFetch = millis();
-      }
-      drawState(state, WiFi.status() == WL_CONNECTED);
-    }
-  }
-
-  delay(50);
+  enterLightSleep();
 }
 
 namespace {
+void setActiveCpuFrequency() {
+  setCpuFrequencyMhz(dooard::kActiveCpuFrequencyMhz);
+}
+
+void setIdleCpuFrequency() { setCpuFrequencyMhz(dooard::kIdleCpuFrequencyMhz); }
+
 bool ensureWifi() {
-  lastWifiAttempt = millis();
   if (WiFi.status() == WL_CONNECTED) {
     return true;
   }
 
-  WiFi.reconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(false);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   const unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - start < kWifiConnectTimeoutMs) {
     M5.update();
     delay(250);
   }
@@ -131,8 +131,12 @@ bool ensureWifi() {
 }
 
 bool ensureClock() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
   configTzTime(kTimeZone, kNtp1, kNtp2);
-  struct tm timeinfo {};
+  struct tm timeinfo{};
   if (getLocalTime(&timeinfo, 5000)) {
     lastClockSync = millis();
     return true;
@@ -141,16 +145,17 @@ bool ensureClock() {
 }
 
 String buildWeatherUrl() {
-  String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(WEATHER_LATITUDE, 6) +
-               "&longitude=" + String(WEATHER_LONGITUDE, 6) +
-               "&timezone=Asia%2FTokyo" +
-               "&forecast_days=2" +
-               "&current=temperature_2m,weather_code,precipitation_probability" +
-               "&hourly=temperature_2m,weather_code,precipitation_probability";
+  String url =
+      String(dooard::kWeatherApiBaseUrl) +
+      "?latitude=" + String(WEATHER_LATITUDE, 6) +
+      "&longitude=" + String(WEATHER_LONGITUDE, 6) + "&timezone=Asia%2FTokyo" +
+      "&forecast_days=2" +
+      "&current=temperature_2m,weather_code,precipitation_probability" +
+      "&hourly=temperature_2m,weather_code,precipitation_probability";
   return url;
 }
 
-bool fetchWeather(WeatherState& out) {
+bool fetchWeather(WeatherState &out) {
   out.ok = false;
   out.title = WEATHER_LABEL;
   out.summary = "No data";
@@ -161,8 +166,7 @@ bool fetchWeather(WeatherState& out) {
     return false;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  WiFiClient client;
   HTTPClient http;
   if (!http.begin(client, buildWeatherUrl())) {
     out.summary = "HTTP begin failed";
@@ -195,9 +199,10 @@ bool fetchWeather(WeatherState& out) {
   out.currentTemperature = current["temperature_2m"] | NAN;
   out.currentWeatherCode = current["weather_code"] | -1;
 
-  struct tm nowTm {};
+  struct tm nowTm{};
   if (!getLocalTime(&nowTm, 1000)) {
-    out.summary = String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
+    out.summary =
+        String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
     out.updatedAt = "--:--";
     out.ok = true;
     return true;
@@ -205,8 +210,10 @@ bool fetchWeather(WeatherState& out) {
 
   char currentHourLabel[16];
   strftime(currentHourLabel, sizeof(currentHourLabel), "%Y-%m-%dT%H", &nowTm);
-  const std::vector<dooard::HourlyForecast> hourlyForecasts = parseHourlyForecasts(hourly);
-  out.buckets = dooard::buildThreeHourBuckets(hourlyForecasts, currentHourLabel, kBucketCount);
+  const std::vector<dooard::HourlyForecast> hourlyForecasts =
+      parseHourlyForecasts(hourly);
+  out.buckets = dooard::buildThreeHourBuckets(hourlyForecasts, currentHourLabel,
+                                              kBucketCount);
 
   out.summary = String(dooard::weatherCodeText(out.currentWeatherCode).c_str());
   out.updatedAt = formatNowLabel();
@@ -214,8 +221,77 @@ bool fetchWeather(WeatherState& out) {
   return true;
 }
 
+bool refreshWeather(bool buttonWake) {
+  setActiveCpuFrequency();
+  if (buttonWake) {
+    drawLoading(dooard::kButtonWakeTitle, dooard::kButtonWakeReason);
+  }
+
+  ensureWifi();
+  if (lastClockSync == 0 || millis() - lastClockSync > kClockSyncIntervalMs) {
+    ensureClock();
+  }
+
+  const bool updated = fetchWeather(state);
+  if (updated) {
+    lastWeatherFetch = millis();
+  }
+  drawState(state, WiFi.status() == WL_CONNECTED);
+  setIdleCpuFrequency();
+  return updated;
+}
+
+bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
+  return wakeupCause == ESP_SLEEP_WAKEUP_EXT1 ||
+         wakeupCause == ESP_SLEEP_WAKEUP_GPIO;
+}
+
+bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
+  return wakeupCause == ESP_SLEEP_WAKEUP_TIMER;
+}
+
+bool buttonsHeldLow() {
+  return digitalRead(dooard::kButtonAGpio) == LOW ||
+         digitalRead(dooard::kButtonBGpio) == LOW ||
+         digitalRead(dooard::kButtonCGpio) == LOW;
+}
+
+void shutdownWifi() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+}
+
+void configureWakeupSources() {
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  esp_sleep_enable_timer_wakeup(dooard::weatherRefreshIntervalUs());
+
+#if CONFIG_IDF_TARGET_ESP32
+  gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonAGpio),
+                     GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonBGpio),
+                     GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonCGpio),
+                     GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+#else
+  esp_sleep_enable_ext1_wakeup(dooard::buttonWakeupMask(),
+                               ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
+}
+
+void enterLightSleep() {
+  shutdownWifi();
+  setIdleCpuFrequency();
+  while (buttonsHeldLow()) {
+    M5.update();
+    delay(20);
+  }
+  configureWakeupSources();
+  esp_light_sleep_start();
+}
+
 String formatNowLabel() {
-  struct tm nowTm {};
+  struct tm nowTm{};
   if (!getLocalTime(&nowTm, 1000)) {
     return "--:--";
   }
@@ -224,12 +300,14 @@ String formatNowLabel() {
   return String(buf);
 }
 
-void drawLoading(const String& line1, const String& line2) {
+void drawLoading(const String &line1, const String &line2) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.drawString(line1, M5.Display.width() / 2, M5.Display.height() / 2 - 16);
+  M5.Display.drawString(line1, M5.Display.width() / 2,
+                        M5.Display.height() / 2 - 16);
   if (!line2.isEmpty()) {
-    M5.Display.drawString(line2, M5.Display.width() / 2, M5.Display.height() / 2 + 16);
+    M5.Display.drawString(line2, M5.Display.width() / 2,
+                          M5.Display.height() / 2 + 16);
   }
 }
 
@@ -293,13 +371,16 @@ void drawSnowIcon(int cx, int cy) {
 
 void drawThunderIcon(int cx, int cy) {
   drawCloudShape(cx, cy - 4, TFT_DARKGREY);
-  M5.Display.fillTriangle(cx - 1, cy + 8, cx + 5, cy + 8, cx - 3, cy + 14, TFT_YELLOW);
-  M5.Display.fillTriangle(cx + 1, cy + 12, cx + 6, cy + 12, cx, cy + 20, TFT_YELLOW);
+  M5.Display.fillTriangle(cx - 1, cy + 8, cx + 5, cy + 8, cx - 3, cy + 14,
+                          TFT_YELLOW);
+  M5.Display.fillTriangle(cx + 1, cy + 12, cx + 6, cy + 12, cx, cy + 20,
+                          TFT_YELLOW);
 }
 
 void drawFogIcon(int cx, int cy) {
   for (int i = -1; i <= 1; ++i) {
-    M5.Display.drawLine(cx - 13, cy + i * 6, cx + 13, cy + i * 6, TFT_LIGHTGREY);
+    M5.Display.drawLine(cx - 13, cy + i * 6, cx + 13, cy + i * 6,
+                        TFT_LIGHTGREY);
   }
 }
 
@@ -326,12 +407,14 @@ void drawWeatherIcon(int cx, int cy, int code) {
 }
 
 uint16_t rainColor(int probability) {
-  if (probability >= 70) return TFT_RED;
-  if (probability >= 40) return TFT_YELLOW;
+  if (probability >= 70)
+    return TFT_RED;
+  if (probability >= 40)
+    return TFT_YELLOW;
   return TFT_WHITE;
 }
 
-void drawState(const WeatherState& s, bool wifiOk) {
+void drawState(const WeatherState &s, bool wifiOk) {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
@@ -345,7 +428,8 @@ void drawState(const WeatherState& s, bool wifiOk) {
   M5.Display.drawString(wifiOk ? "Wi-Fi OK" : "Wi-Fi NG", 314, 6);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
   if (s.ok && !isnan(s.currentTemperature)) {
-    M5.Display.drawString(String("Now ") + String(s.currentTemperature, 1) + "C", 314, 18);
+    M5.Display.drawString(
+        String("Now ") + String(s.currentTemperature, 1) + "C", 314, 18);
   } else {
     M5.Display.drawString(s.summary, 314, 18);
   }
@@ -355,17 +439,19 @@ void drawState(const WeatherState& s, bool wifiOk) {
   if (s.buckets.empty()) {
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextSize(2);
-    M5.Display.drawString(s.summary.isEmpty() ? "No forecast" : s.summary, 160, 120);
+    M5.Display.drawString(s.summary.isEmpty() ? "No forecast" : s.summary, 160,
+                          120);
   } else {
     constexpr int kCellTop = 36;
     constexpr int kCellBottom = 200;
     constexpr int kCellWidth = 320 / 6;
     for (size_t i = 0; i < s.buckets.size() && i < kBucketCount; ++i) {
-      const auto& b = s.buckets[i];
+      const auto &b = s.buckets[i];
       const int cx = (int)i * kCellWidth + kCellWidth / 2;
 
       if (i > 0) {
-        M5.Display.drawFastVLine((int)i * kCellWidth, kCellTop, kCellBottom - kCellTop, TFT_DARKGREY);
+        M5.Display.drawFastVLine((int)i * kCellWidth, kCellTop,
+                                 kCellBottom - kCellTop, TFT_DARKGREY);
       }
 
       M5.Display.setTextDatum(top_center);
@@ -380,9 +466,11 @@ void drawState(const WeatherState& s, bool wifiOk) {
       drawWeatherIcon(cx, kCellTop + 56, b.worst_weather_code);
 
       M5.Display.setTextSize(2);
-      M5.Display.setTextColor(rainColor(b.max_precipitation_probability), TFT_BLACK);
-      const String pctText =
-          b.max_precipitation_probability >= 0 ? String(b.max_precipitation_probability) + "%" : String("--");
+      M5.Display.setTextColor(rainColor(b.max_precipitation_probability),
+                              TFT_BLACK);
+      const String pctText = b.max_precipitation_probability >= 0
+                                 ? String(b.max_precipitation_probability) + "%"
+                                 : String("--");
       M5.Display.drawString(pctText, cx, kCellTop + 92);
 
       M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
@@ -405,7 +493,8 @@ void drawState(const WeatherState& s, bool wifiOk) {
   M5.Display.drawString("Btn A/B/C: refresh", 314, 218);
 }
 
-std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourly) {
+std::vector<dooard::HourlyForecast>
+parseHourlyForecasts(const JsonObject &hourly) {
   std::vector<dooard::HourlyForecast> forecasts;
   const JsonArray times = hourly["time"].as<JsonArray>();
   const JsonArray temps = hourly["temperature_2m"].as<JsonArray>();
@@ -416,7 +505,7 @@ std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourl
   forecasts.reserve(count);
   for (size_t i = 0; i < count; ++i) {
     dooard::HourlyForecast forecast;
-    forecast.time = (const char*)(times[i] | "");
+    forecast.time = (const char *)(times[i] | "");
     forecast.temperature = temps[i] | NAN;
     forecast.precipitation_probability = probs[i] | -1;
     forecast.weather_code = codes[i] | -1;
@@ -424,4 +513,4 @@ std::vector<dooard::HourlyForecast> parseHourlyForecasts(const JsonObject& hourl
   }
   return forecasts;
 }
-}  // namespace
+} // namespace
