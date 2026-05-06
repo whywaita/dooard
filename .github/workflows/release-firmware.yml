@@ -36,7 +36,7 @@ jobs:
           cat > public/firmware/version.json <<EOF
           {
             "version": "${version}",
-            "firmware_url": "http://whywaita.github.io/dooard/firmware/firmware.bin",
+            "firmware_url": "https://whywaita.github.io/dooard/firmware/firmware.bin",
             "sha256": "${sha256}",
             "size_bytes": ${size_bytes}
           }

@@ -6,15 +6,15 @@
 
 #if defined(ARDUINO)
 #include <HTTPClient.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #endif
 
 namespace dooard {
 namespace ota {
 namespace {
 
-bool isPlainHttpUrl(const char *url) {
-  return url != nullptr && std::string(url).rfind("http://", 0) == 0;
+bool isHttpsUrl(const char *url) {
+  return url != nullptr && std::string(url).rfind("https://", 0) == 0;
 }
 
 } // namespace
@@ -36,8 +36,8 @@ bool parseManifestJson(const char *json, OtaManifest &out, std::string &error) {
     error = "invalid version";
     return false;
   }
-  if (!isPlainHttpUrl(firmwareUrl)) {
-    error = "firmware_url must be http://";
+  if (!isHttpsUrl(firmwareUrl)) {
+    error = "firmware_url must be https://";
     return false;
   }
   if (!isSha256Hex(std::string(sha256))) {
@@ -57,7 +57,8 @@ bool parseManifestJson(const char *json, OtaManifest &out, std::string &error) {
 
 #if defined(ARDUINO)
 bool fetchOtaManifest(OtaManifest &out, std::string &error) {
-  WiFiClient client;
+  WiFiClientSecure client;
+  client.setInsecure();
   HTTPClient http;
   http.setTimeout(kOtaHttpTimeoutMs);
   if (!http.begin(client, kOtaManifestUrl)) {

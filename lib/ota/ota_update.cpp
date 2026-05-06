@@ -4,7 +4,7 @@
 
 #include <HTTPClient.h>
 #include <Update.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <algorithm>
 #include <cctype>
 #include <mbedtls/sha256.h>
@@ -67,7 +67,8 @@ bool performOtaUpdate(const OtaManifest &manifest, std::string &error) {
     return false;
   }
 
-  WiFiClient client;
+  WiFiClientSecure client;
+  client.setInsecure();
   HTTPClient http;
   http.setTimeout(kOtaHttpTimeoutMs);
   if (!http.begin(client, manifest.firmware_url.c_str())) {

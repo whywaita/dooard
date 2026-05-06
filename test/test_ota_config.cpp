@@ -31,13 +31,13 @@ void test_parse_ota_manifest_requires_expected_fields() {
   std::string error;
 
   TEST_ASSERT_TRUE(dooard::ota::parseManifestJson(
-      "{\"version\":\"1.2.4\",\"firmware_url\":\"http://whywaita.github.io/"
+      "{\"version\":\"1.2.4\",\"firmware_url\":\"https://whywaita.github.io/"
       "dooard/firmware/firmware.bin\",\"sha256\":\"0123456789abcdef01234567"
       "89abcdef0123456789abcdef0123456789abcdef\",\"size_bytes\":1234}",
       manifest, error));
 
   TEST_ASSERT_EQUAL_STRING("1.2.4", manifest.version.c_str());
-  TEST_ASSERT_EQUAL_STRING("http://whywaita.github.io/dooard/firmware/"
+  TEST_ASSERT_EQUAL_STRING("https://whywaita.github.io/dooard/firmware/"
                            "firmware.bin",
                            manifest.firmware_url.c_str());
   TEST_ASSERT_EQUAL_STRING("0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -51,7 +51,7 @@ void test_parse_ota_manifest_rejects_invalid_sha256() {
   std::string error;
 
   TEST_ASSERT_FALSE(dooard::ota::parseManifestJson(
-      "{\"version\":\"1.2.4\",\"firmware_url\":\"http://example.test/"
+      "{\"version\":\"1.2.4\",\"firmware_url\":\"https://example.test/"
       "firmware.bin\",\"sha256\":\"short\"}",
       manifest, error));
 }

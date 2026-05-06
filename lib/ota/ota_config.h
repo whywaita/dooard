@@ -19,9 +19,9 @@ struct Version {
 
 constexpr const char *kFirmwareVersion = DOOARD_FIRMWARE_VERSION;
 constexpr const char *kOtaManifestUrl =
-    "http://whywaita.github.io/dooard/firmware/version.json";
+    "https://whywaita.github.io/dooard/firmware/version.json";
 constexpr const char *kDefaultFirmwareUrl =
-    "http://whywaita.github.io/dooard/firmware/firmware.bin";
+    "https://whywaita.github.io/dooard/firmware/firmware.bin";
 constexpr uint32_t kOtaPollIntervalMs = 6UL * 60UL * 60UL * 1000UL;
 constexpr uint32_t kOtaManualHoldMs = 2UL * 1000UL;
 constexpr uint32_t kOtaHttpTimeoutMs = 20UL * 1000UL;
