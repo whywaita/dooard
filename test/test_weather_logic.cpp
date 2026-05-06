@@ -125,9 +125,55 @@ void test_weather_refresh_interval_is_thirty_minutes() {
 }
 
 void test_display_and_cpu_power_policy_values() {
-  TEST_ASSERT_EQUAL_UINT8(64, dooard::kDisplayBrightness);
+  TEST_ASSERT_EQUAL_UINT32(2UL * 60UL * 1000UL, dooard::kDimTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(5UL * 60UL * 1000UL, dooard::kSleepTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT8(128, dooard::kActiveBrightness);
+  TEST_ASSERT_EQUAL_UINT8(16, dooard::kDimBrightness);
+  TEST_ASSERT_EQUAL_UINT8(16, dooard::kSleepBrightness);
   TEST_ASSERT_EQUAL_UINT32(240, dooard::kActiveCpuFrequencyMhz);
   TEST_ASSERT_EQUAL_UINT32(80, dooard::kIdleCpuFrequencyMhz);
+}
+
+void test_power_stage_after_inactivity_matches_dim_and_sleep_thresholds() {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dooard::PowerStage::kActive),
+                          static_cast<uint8_t>(dooard::stageAfterInactivity(
+                              dooard::kDimTimeoutMs - 1)));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(dooard::PowerStage::kDim),
+                          static_cast<uint8_t>(dooard::stageAfterInactivity(
+                              dooard::kDimTimeoutMs)));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(dooard::PowerStage::kDim),
+      static_cast<uint8_t>(dooard::stageAfterInactivity(
+          dooard::kDimTimeoutMs + dooard::kSleepTimeoutMs - 1)));
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(dooard::PowerStage::kSleep),
+      static_cast<uint8_t>(dooard::stageAfterInactivity(
+          dooard::kDimTimeoutMs + dooard::kSleepTimeoutMs)));
+}
+
+void test_brightness_for_power_stage() {
+  TEST_ASSERT_EQUAL_UINT8(
+      dooard::kActiveBrightness,
+      dooard::brightnessForStage(dooard::PowerStage::kActive));
+  TEST_ASSERT_EQUAL_UINT8(dooard::kDimBrightness,
+                          dooard::brightnessForStage(dooard::PowerStage::kDim));
+  TEST_ASSERT_EQUAL_UINT8(
+      dooard::kSleepBrightness,
+      dooard::brightnessForStage(dooard::PowerStage::kSleep));
+}
+
+void test_sleep_wake_interval_caps_polling_before_weather_refresh() {
+  TEST_ASSERT_EQUAL_UINT32(dooard::kSleepTimeoutMs,
+                           dooard::sleepWakeIntervalMs(0));
+  TEST_ASSERT_EQUAL_UINT32(
+      60UL * 1000UL, dooard::sleepWakeIntervalMs(
+                         dooard::kWeatherRefreshIntervalMs - 60UL * 1000UL));
+  TEST_ASSERT_EQUAL_UINT32(
+      0, dooard::sleepWakeIntervalMs(dooard::kWeatherRefreshIntervalMs));
+  TEST_ASSERT_EQUAL_UINT64(
+      60ULL * 1000ULL * 1000ULL,
+      dooard::sleepWakeIntervalUs(dooard::kWeatherRefreshIntervalMs -
+                                  60UL * 1000UL));
 }
 
 void test_core2_button_wakeup_gpio_mask() {
@@ -162,6 +208,9 @@ int main(int argc, char **argv) {
   RUN_TEST(test_weather_endpoint_uses_plain_http);
   RUN_TEST(test_weather_refresh_interval_is_thirty_minutes);
   RUN_TEST(test_display_and_cpu_power_policy_values);
+  RUN_TEST(test_power_stage_after_inactivity_matches_dim_and_sleep_thresholds);
+  RUN_TEST(test_brightness_for_power_stage);
+  RUN_TEST(test_sleep_wake_interval_caps_polling_before_weather_refresh);
   RUN_TEST(test_core2_button_wakeup_gpio_mask);
   RUN_TEST(test_button_refresh_labels_match_requirement);
   return UNITY_END();

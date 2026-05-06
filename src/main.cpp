@@ -44,6 +44,9 @@ constexpr size_t kBucketCount = 6;
 WeatherState state;
 unsigned long lastWeatherFetch = 0;
 unsigned long lastClockSync = 0;
+unsigned long lastInteractionAt = 0;
+dooard::PowerStage powerStage = dooard::PowerStage::kActive;
+esp_sleep_wakeup_cause_t pendingWakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
 
 String formatNowLabel();
 void drawLoading(const String &line1, const String &line2 = "");
@@ -53,13 +56,21 @@ bool ensureClock();
 bool fetchWeather(WeatherState &out);
 String buildWeatherUrl();
 bool refreshWeather(bool buttonWake);
+void noteUserActivity();
+void applyPowerStage(dooard::PowerStage nextStage);
+void updatePowerStageForInactivity(unsigned long now);
+esp_sleep_wakeup_cause_t consumeWakeupCause();
 bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause);
 bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause);
+bool buttonsPressed();
 bool buttonsHeldLow();
+bool weatherRefreshDue(unsigned long now);
+uint32_t elapsedSinceWeatherRefresh(unsigned long now);
+uint64_t nextSleepTimerUs(unsigned long now);
 void setActiveCpuFrequency();
 void setIdleCpuFrequency();
 void shutdownWifi();
-void configureWakeupSources();
+void configureWakeupSources(uint64_t timerUs);
 void enterLightSleep();
 std::vector<dooard::HourlyForecast>
 parseHourlyForecasts(const JsonObject &hourly);
@@ -69,7 +80,7 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
   setActiveCpuFrequency();
-  M5.Display.setBrightness(dooard::kDisplayBrightness);
+  applyPowerStage(dooard::PowerStage::kActive);
   pinMode(dooard::kButtonAGpio, INPUT);
   pinMode(dooard::kButtonBGpio, INPUT);
   pinMode(dooard::kButtonCGpio, INPUT);
@@ -82,6 +93,7 @@ void setup() {
 
   state.title = WEATHER_LABEL;
   state.summary = "Loading";
+  lastInteractionAt = millis();
 
   refreshWeather(false);
   shutdownWifi();
@@ -89,21 +101,44 @@ void setup() {
 }
 
 void loop() {
-  setActiveCpuFrequency();
-  const esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
   M5.update();
+  const esp_sleep_wakeup_cause_t wakeupCause = consumeWakeupCause();
+  const bool buttonRefresh = isButtonWakeup(wakeupCause) || buttonsPressed();
 
-  const bool buttonRefresh = isButtonWakeup(wakeupCause) ||
-                             M5.BtnA.wasPressed() || M5.BtnB.wasPressed() ||
-                             M5.BtnC.wasPressed();
   if (buttonRefresh) {
+    noteUserActivity();
     refreshWeather(true);
-  } else if (isTimerWakeup(wakeupCause) || lastWeatherFetch == 0 ||
-             millis() - lastWeatherFetch > dooard::kWeatherRefreshIntervalMs) {
-    refreshWeather(false);
+    shutdownWifi();
+    setIdleCpuFrequency();
+    return;
   }
 
-  enterLightSleep();
+  const unsigned long now = millis();
+  const bool timerWake = isTimerWakeup(wakeupCause);
+  if (timerWake && powerStage == dooard::PowerStage::kSleep) {
+    applyPowerStage(dooard::PowerStage::kDim);
+  }
+
+  if (weatherRefreshDue(now)) {
+    if (timerWake) {
+      applyPowerStage(dooard::PowerStage::kDim);
+    }
+    refreshWeather(false);
+    if (powerStage != dooard::PowerStage::kActive) {
+      applyPowerStage(dooard::PowerStage::kDim);
+    }
+    shutdownWifi();
+  }
+
+  updatePowerStageForInactivity(millis());
+  if (powerStage == dooard::PowerStage::kSleep) {
+    enterLightSleep();
+    return;
+  }
+
+  shutdownWifi();
+  setIdleCpuFrequency();
+  delay(100);
 }
 
 namespace {
@@ -233,12 +268,35 @@ bool refreshWeather(bool buttonWake) {
   }
 
   const bool updated = fetchWeather(state);
-  if (updated) {
-    lastWeatherFetch = millis();
-  }
+  lastWeatherFetch = millis();
   drawState(state, WiFi.status() == WL_CONNECTED);
   setIdleCpuFrequency();
   return updated;
+}
+
+void noteUserActivity() {
+  lastInteractionAt = millis();
+  applyPowerStage(dooard::PowerStage::kActive);
+}
+
+void applyPowerStage(dooard::PowerStage nextStage) {
+  powerStage = nextStage;
+  M5.Display.setBrightness(dooard::brightnessForStage(nextStage));
+}
+
+void updatePowerStageForInactivity(unsigned long now) {
+  const uint32_t inactivityMs = static_cast<uint32_t>(now - lastInteractionAt);
+  const dooard::PowerStage nextStage =
+      dooard::stageAfterInactivity(inactivityMs);
+  if (nextStage != powerStage) {
+    applyPowerStage(nextStage);
+  }
+}
+
+esp_sleep_wakeup_cause_t consumeWakeupCause() {
+  const esp_sleep_wakeup_cause_t wakeupCause = pendingWakeupCause;
+  pendingWakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
+  return wakeupCause;
 }
 
 bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
@@ -250,10 +308,36 @@ bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
   return wakeupCause == ESP_SLEEP_WAKEUP_TIMER;
 }
 
+bool buttonsPressed() {
+  return M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
+}
+
 bool buttonsHeldLow() {
   return digitalRead(dooard::kButtonAGpio) == LOW ||
          digitalRead(dooard::kButtonBGpio) == LOW ||
          digitalRead(dooard::kButtonCGpio) == LOW;
+}
+
+bool weatherRefreshDue(unsigned long now) {
+  return lastWeatherFetch == 0 ||
+         static_cast<uint32_t>(now - lastWeatherFetch) >=
+             dooard::kWeatherRefreshIntervalMs;
+}
+
+uint32_t elapsedSinceWeatherRefresh(unsigned long now) {
+  if (lastWeatherFetch == 0) {
+    return 0;
+  }
+  return static_cast<uint32_t>(now - lastWeatherFetch);
+}
+
+uint64_t nextSleepTimerUs(unsigned long now) {
+  const uint32_t timerMs =
+      dooard::sleepWakeIntervalMs(elapsedSinceWeatherRefresh(now));
+  if (timerMs == 0) {
+    return dooard::sleepWakeIntervalUs(0);
+  }
+  return static_cast<uint64_t>(timerMs) * 1000ULL;
 }
 
 void shutdownWifi() {
@@ -261,9 +345,9 @@ void shutdownWifi() {
   WiFi.mode(WIFI_OFF);
 }
 
-void configureWakeupSources() {
+void configureWakeupSources(uint64_t timerUs) {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-  esp_sleep_enable_timer_wakeup(dooard::weatherRefreshIntervalUs());
+  esp_sleep_enable_timer_wakeup(timerUs);
 
 #if CONFIG_IDF_TARGET_ESP32
   gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonAGpio),
@@ -280,14 +364,16 @@ void configureWakeupSources() {
 }
 
 void enterLightSleep() {
+  applyPowerStage(dooard::PowerStage::kSleep);
   shutdownWifi();
   setIdleCpuFrequency();
   while (buttonsHeldLow()) {
     M5.update();
     delay(20);
   }
-  configureWakeupSources();
+  configureWakeupSources(nextSleepTimerUs(millis()));
   esp_light_sleep_start();
+  pendingWakeupCause = esp_sleep_get_wakeup_cause();
 }
 
 String formatNowLabel() {
