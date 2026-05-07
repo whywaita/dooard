@@ -345,8 +345,18 @@ bool runSerialCredentialSetup() {
   record.wifi_ssid = readSerialCredentialLine("WiFi SSID", true);
   record.wifi_password = readSerialCredentialLine("WiFi password", true);
   record.api_key = readSerialCredentialLine("API key", false);
-  record.device_id = readSerialCredentialLine("Device ID", true);
-  record.endpoint_url = readSerialCredentialLine("Endpoint URL", true);
+  record.device_id = readSerialCredentialLine("Device ID", false);
+  if (record.device_id.empty()) {
+    record.device_id = DOOARD_DEVICE_ID;
+    Serial.print("Using default device_id: ");
+    Serial.println(record.device_id.c_str());
+  }
+  record.endpoint_url = readSerialCredentialLine("Endpoint URL", false);
+  if (record.endpoint_url.empty()) {
+    record.endpoint_url = DOOARD_ENDPOINT_URL;
+    Serial.print("Using default endpoint_url: ");
+    Serial.println(record.endpoint_url.c_str());
+  }
 
   dooard::credentials::CredentialStore store;
   if (!store.begin(dooard::credentials::CredentialAccessMode::kReadWrite)) {
