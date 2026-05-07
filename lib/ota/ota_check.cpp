@@ -56,7 +56,12 @@ bool parseManifestJson(const char *json, OtaManifest &out, std::string &error) {
 }
 
 #if defined(ARDUINO)
-bool fetchOtaManifest(OtaManifest &out, std::string &error) {
+namespace {
+
+constexpr uint8_t kFetchManifestMaxAttempts = 3;
+constexpr uint32_t kFetchManifestRetryDelayMs = 750;
+
+bool fetchOtaManifestOnce(OtaManifest &out, std::string &error) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
@@ -76,6 +81,28 @@ bool fetchOtaManifest(OtaManifest &out, std::string &error) {
   const String body = http.getString();
   http.end();
   return parseManifestJson(body.c_str(), out, error);
+}
+
+} // namespace
+
+bool fetchOtaManifest(OtaManifest &out, std::string &error) {
+  // The lwIP DNS resolver on ESP32 occasionally fails the very first lookup
+  // for a hostname after Wi-Fi association even when other names resolve
+  // fine. Retry a small number of times so a transient resolver hiccup does
+  // not surface as a permanent "OTA check failed".
+  for (uint8_t attempt = 0; attempt < kFetchManifestMaxAttempts; ++attempt) {
+    if (fetchOtaManifestOnce(out, error)) {
+      return true;
+    }
+    Serial.print("OTA manifest fetch attempt ");
+    Serial.print(attempt + 1);
+    Serial.print(" failed: ");
+    Serial.println(error.c_str());
+    if (attempt + 1 < kFetchManifestMaxAttempts) {
+      delay(kFetchManifestRetryDelayMs);
+    }
+  }
+  return false;
 }
 #endif
 
