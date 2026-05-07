@@ -18,6 +18,9 @@ constexpr uint32_t kIdleCpuFrequencyMhz = 80;
 constexpr uint8_t kButtonAGpio = 37;
 constexpr uint8_t kButtonBGpio = 38;
 constexpr uint8_t kButtonCGpio = 39;
+constexpr uint8_t kTouchIntrGpio = 36;
+constexpr uint32_t kButtonReleasePollMs = 20;
+constexpr uint32_t kButtonReleaseSettleMs = 100;
 constexpr const char *kButtonWakeTitle = "Refreshing";
 constexpr const char *kButtonWakeReason = "Button pressed";
 
@@ -66,6 +69,11 @@ constexpr uint64_t sleepWakeIntervalUs(uint32_t elapsedSinceWeatherRefreshMs) {
 constexpr uint64_t buttonWakeupMask() {
   return (1ULL << kButtonAGpio) | (1ULL << kButtonBGpio) |
          (1ULL << kButtonCGpio);
+}
+
+constexpr bool isUserInteractionWakeup(bool touchWakeup, bool ext1ButtonWakeup,
+                                       bool gpioButtonWakeup) {
+  return touchWakeup || ext1ButtonWakeup || gpioButtonWakeup;
 }
 
 } // namespace dooard

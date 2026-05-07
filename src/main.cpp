@@ -113,6 +113,7 @@ bool buttonsPressed();
 bool otaButtonChordPressed();
 bool handleOtaButtonChord();
 bool buttonsHeldLow();
+void waitForButtonsReleased();
 bool weatherRefreshDue(unsigned long now);
 bool otaPollDue(unsigned long now);
 uint32_t elapsedSinceWeatherRefresh(unsigned long now);
@@ -136,6 +137,7 @@ void setup() {
   pinMode(dooard::kButtonAGpio, INPUT);
   pinMode(dooard::kButtonBGpio, INPUT);
   pinMode(dooard::kButtonCGpio, INPUT);
+  pinMode(dooard::kTouchIntrGpio, INPUT);
   M5.Display.setRotation(1);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -640,8 +642,9 @@ esp_sleep_wakeup_cause_t consumeWakeupCause() {
 }
 
 bool isButtonWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
-  return wakeupCause == ESP_SLEEP_WAKEUP_EXT1 ||
-         wakeupCause == ESP_SLEEP_WAKEUP_GPIO;
+  return dooard::isUserInteractionWakeup(wakeupCause == ESP_SLEEP_WAKEUP_EXT0,
+                                         wakeupCause == ESP_SLEEP_WAKEUP_EXT1,
+                                         wakeupCause == ESP_SLEEP_WAKEUP_GPIO);
 }
 
 bool isTimerWakeup(esp_sleep_wakeup_cause_t wakeupCause) {
@@ -685,6 +688,19 @@ bool buttonsHeldLow() {
          digitalRead(dooard::kButtonCGpio) == LOW;
 }
 
+void waitForButtonsReleased() {
+  for (;;) {
+    while (buttonsHeldLow()) {
+      M5.update();
+      delay(dooard::kButtonReleasePollMs);
+    }
+    delay(dooard::kButtonReleaseSettleMs);
+    if (!buttonsHeldLow()) {
+      return;
+    }
+  }
+}
+
 bool weatherRefreshDue(unsigned long now) {
   return lastWeatherFetch == 0 ||
          static_cast<uint32_t>(now - lastWeatherFetch) >=
@@ -720,8 +736,11 @@ void shutdownWifi() {
 void configureWakeupSources(uint64_t timerUs) {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_sleep_enable_timer_wakeup(timerUs);
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
 #if CONFIG_IDF_TARGET_ESP32
+  esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(dooard::kTouchIntrGpio),
+                               0);
   gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonAGpio),
                      GPIO_INTR_LOW_LEVEL);
   gpio_wakeup_enable(static_cast<gpio_num_t>(dooard::kButtonBGpio),
@@ -739,10 +758,7 @@ void enterLightSleep() {
   applyPowerStage(dooard::PowerStage::kSleep);
   shutdownWifi();
   setIdleCpuFrequency();
-  while (buttonsHeldLow()) {
-    M5.update();
-    delay(20);
-  }
+  waitForButtonsReleased();
   configureWakeupSources(nextSleepTimerUs(millis()));
   esp_light_sleep_start();
   pendingWakeupCause = esp_sleep_get_wakeup_cause();

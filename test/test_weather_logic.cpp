@@ -184,6 +184,22 @@ void test_core2_button_wakeup_gpio_mask() {
                            dooard::buttonWakeupMask());
 }
 
+void test_core2_touch_wakeup_gpio() {
+  TEST_ASSERT_EQUAL_UINT8(36, dooard::kTouchIntrGpio);
+}
+
+void test_user_interaction_wakeup_policy_includes_touch_and_buttons() {
+  TEST_ASSERT_TRUE(dooard::isUserInteractionWakeup(true, false, false));
+  TEST_ASSERT_TRUE(dooard::isUserInteractionWakeup(false, true, false));
+  TEST_ASSERT_TRUE(dooard::isUserInteractionWakeup(false, false, true));
+  TEST_ASSERT_FALSE(dooard::isUserInteractionWakeup(false, false, false));
+}
+
+void test_light_sleep_button_release_guard_timing() {
+  TEST_ASSERT_EQUAL_UINT32(20, dooard::kButtonReleasePollMs);
+  TEST_ASSERT_EQUAL_UINT32(100, dooard::kButtonReleaseSettleMs);
+}
+
 void test_button_refresh_labels_match_requirement() {
   TEST_ASSERT_EQUAL_STRING("Refreshing", dooard::kButtonWakeTitle);
   TEST_ASSERT_EQUAL_STRING("Button pressed", dooard::kButtonWakeReason);
@@ -223,6 +239,9 @@ int main(int argc, char **argv) {
   RUN_TEST(test_brightness_for_power_stage);
   RUN_TEST(test_sleep_wake_interval_caps_polling_before_weather_refresh);
   RUN_TEST(test_core2_button_wakeup_gpio_mask);
+  RUN_TEST(test_core2_touch_wakeup_gpio);
+  RUN_TEST(test_user_interaction_wakeup_policy_includes_touch_and_buttons);
+  RUN_TEST(test_light_sleep_button_release_guard_timing);
   RUN_TEST(test_button_refresh_labels_match_requirement);
   RUN_TEST(test_ota_poll_interval_is_six_hours);
   RUN_TEST(test_ota_version_compare_orders_semantic_versions);
