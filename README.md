@@ -86,31 +86,15 @@ manifest.
 Pushing a tag such as `v0.1.0` builds `.pio/build/core2/firmware.bin`, writes
 `firmware/version.json`, and deploys both files to GitHub Pages.
 
-## NVS, Flash Encryption, and Secure Boot
+## NVS credential storage
 
-Release devices store Wi-Fi credentials, API key, device ID, and endpoint URL in
-NVS instead of firmware. The existing `default_8MB.csv` partition table already
-contains the 24 KB `nvs` partition at `0x9000`, and `platformio.ini` sets
-`board_build.flash_mode = qio` for the Core2 firmware.
+Wi-Fi credentials, API key, device ID, and endpoint URL are stored in ESP32 NVS
+(namespace `dooard-creds`) via `CredentialStore`. The existing `default_8MB.csv`
+partition table already includes the 24 KB `nvs` partition at `0x9000`, so no
+partition change is needed.
 
-Use `core2` for development builds and `core2_secure` for release artifacts:
-
-```sh
-make build
-UV_CACHE_DIR=/tmp/uv-cache UV_PYTHON_INSTALL_DIR=/tmp/uv-python \
-  PLATFORMIO_CORE_DIR=/tmp/platformio-core pio run -e core2_secure
-```
-
-Flash Encryption release provisioning, Secure Boot v2 key handling, encrypted
-flashing, readout comparison, and backup/recovery rules are documented in
-`security/README.md`. After Flash Encryption is enabled, serial flashing must
-use encrypted artifacts, for example:
-
-```sh
-pio run -e core2_secure -t encrypt -t upload
-```
-
-or `esptool.py write_flash --encrypt` with the generated encrypted binaries.
+On first boot the device prompts for credentials over serial. Once saved, NVS
+persists across OTA firmware updates.
 
 ## Tooling
 

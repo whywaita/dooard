@@ -5,11 +5,6 @@
 .whywaita/
 secrets.local.h
 secrets.h
-security/*.bin
-security/*.pem
-security/*.key
-security/*-encrypted.*
-security/digest*.bin
 .DS_Store
 __pycache__/
 
