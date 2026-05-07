@@ -574,7 +574,17 @@ void executeOtaUpdate() {
   noteUserActivity();
   drawLoading("OTA update", "Preparing...");
 
-  if (!pendingOtaAvailable && !checkForOtaUpdate(true)) {
+  // Always re-poll the manifest so a server-side release published after the
+  // last cache update does not cause size/sha256 verification failures with
+  // stale cached values.
+  if (!checkForOtaUpdate(true)) {
+    shutdownWifi();
+    return;
+  }
+  if (!pendingOtaAvailable) {
+    drawLoading("OTA update", "No update");
+    delay(1500);
+    drawState(state, WiFi.status() == WL_CONNECTED);
     shutdownWifi();
     return;
   }
