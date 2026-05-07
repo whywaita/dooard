@@ -211,6 +211,10 @@ void test_ota_version_compare_accepts_v_prefix_and_missing_patch();
 void test_ota_version_compare_rejects_invalid_versions();
 void test_parse_ota_manifest_requires_expected_fields();
 void test_parse_ota_manifest_rejects_invalid_sha256();
+void test_credential_store_namespace_and_key_names_are_nvs_safe();
+void test_credential_record_finalize_sets_version_configured_and_checksum();
+void test_credential_record_validation_detects_not_configured_missing_required_and_checksum();
+void test_credential_record_validation_detects_unsupported_schema_version();
 
 void setUp(void) {}
 
@@ -245,5 +249,12 @@ int main(int argc, char **argv) {
   RUN_TEST(test_ota_version_compare_rejects_invalid_versions);
   RUN_TEST(test_parse_ota_manifest_requires_expected_fields);
   RUN_TEST(test_parse_ota_manifest_rejects_invalid_sha256);
+  RUN_TEST(test_credential_store_namespace_and_key_names_are_nvs_safe);
+  RUN_TEST(
+      test_credential_record_finalize_sets_version_configured_and_checksum);
+  RUN_TEST(
+      test_credential_record_validation_detects_not_configured_missing_required_and_checksum);
+  RUN_TEST(
+      test_credential_record_validation_detects_unsupported_schema_version);
   return UNITY_END();
 }

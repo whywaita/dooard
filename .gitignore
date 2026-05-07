@@ -2,6 +2,7 @@
 .venv/
 .worktrees/
 .vscode/
+.whywaita/
 secrets.local.h
 secrets.h
 .DS_Store

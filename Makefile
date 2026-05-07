@@ -19,4 +19,4 @@ burn:
 	$(UV) run pio run -t upload $(if $(UPLOAD_PORT),--upload-port $(UPLOAD_PORT),)
 
 monitor:
-	$(UV) run pio device monitor
+	$(UV) run pio device monitor $(if $(UPLOAD_PORT),--port $(UPLOAD_PORT),)
