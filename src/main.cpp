@@ -584,17 +584,7 @@ void executeOtaUpdate() {
   noteUserActivity();
   drawLoading("OTA update", "Preparing...");
 
-  // Always re-poll the manifest so a server-side release published after the
-  // last cache update does not cause size/sha256 verification failures with
-  // stale cached values.
-  if (!checkForOtaUpdate(true)) {
-    shutdownWifi();
-    return;
-  }
-  if (!pendingOtaAvailable) {
-    drawLoading("OTA update", "No update");
-    delay(1500);
-    drawState(state, WiFi.status() == WL_CONNECTED);
+  if (!pendingOtaAvailable && !checkForOtaUpdate(true)) {
     shutdownWifi();
     return;
   }
@@ -622,7 +612,26 @@ void executeOtaUpdate() {
   drawLoading("OTA update",
               String("Downloading ") + pendingOtaManifest.version.c_str());
   std::string error;
-  if (!dooard::ota::performOtaUpdate(pendingOtaManifest, error)) {
+  bool ok = dooard::ota::performOtaUpdate(pendingOtaManifest, error);
+
+  // If the cached manifest is stale (a new release was published after the
+  // last poll), the size and sha256 checks in performOtaUpdate trip. On those
+  // specific failures, re-poll the manifest and retry the download once. This
+  // keeps the success path to a single TLS session, which matters because two
+  // back-to-back HTTPS handshakes on ESP32 can fail with HTTPC -1.
+  if (!ok && (error == "size mismatch" || error == "sha256 mismatch")) {
+    drawLoading("OTA update", "Refreshing manifest");
+    if (checkForOtaUpdate(true) && pendingOtaAvailable &&
+        dooard::ota::isNewerVersion(dooard::ota::currentFirmwareVersion(),
+                                    pendingOtaManifest.version.c_str()) &&
+        ensureWifi()) {
+      drawLoading("OTA update",
+                  String("Downloading ") + pendingOtaManifest.version.c_str());
+      ok = dooard::ota::performOtaUpdate(pendingOtaManifest, error);
+    }
+  }
+
+  if (!ok) {
     otaStatusLine = "OTA failed";
     drawLoading("OTA failed", String(error.c_str()));
     delay(3000);
