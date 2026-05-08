@@ -1,6 +1,7 @@
 # Changelog
 
-## [v0.1.0](https://github.com/whywaita/dooard/compare/v0.2.2...v0.1.0) - 2026-05-08
+## [v0.2.3](https://github.com/whywaita/dooard/compare/v0.2.2...v0.2.3) - 2026-05-08
+- ci: add tagpr release automation by @whywaita in https://github.com/whywaita/dooard/pull/9
 
 ## [v0.2.2](https://github.com/whywaita/dooard/compare/v0.1.2...v0.2.2) - 2026-05-07
 - fix(power): restore Core2 sleep wakeups by @whywaita in https://github.com/whywaita/dooard/pull/8
