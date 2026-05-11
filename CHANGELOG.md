@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.4](https://github.com/whywaita/dooard/compare/v0.2.3...v0.2.4) - 2026-05-11
+- ci: tagpr workflow 内でファームウェアビルド＆デプロイを合わせて行う by @whywaita in https://github.com/whywaita/dooard/pull/11
+- revert: undo direct pushes to main by @whywaita in https://github.com/whywaita/dooard/pull/13
+- ci: merge firmware build into tagpr workflow by @whywaita in https://github.com/whywaita/dooard/pull/14
+
 ## [v0.2.3](https://github.com/whywaita/dooard/compare/v0.2.2...v0.2.3) - 2026-05-08
 - ci: add tagpr release automation by @whywaita in https://github.com/whywaita/dooard/pull/9
 
