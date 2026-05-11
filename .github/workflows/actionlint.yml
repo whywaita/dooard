@@ -19,3 +19,5 @@ jobs:
           install -m 755 actionlint /usr/local/bin/actionlint
       - name: Run actionlint
         run: actionlint .github/workflows/*.yml
+      - name: Run workflow policy tests
+        run: bash test/test_tagpr_workflow.sh
